@@ -1,0 +1,22 @@
+node_modules/
+dist/
+build/
+.cache/
+.vite/
+vite.config.*.timestamp-*
+*.tsbuildinfo
+*-debug.log*
+*.log
+logs/
+.tmp-*
+
+# Secretos: NUNCA subir tus llaves a GitHub
+.env
+.env.*
+!.env.example
+
+# Estado de herramientas de la plataforma
+.claude-replay.*
+/.figma/design-context/
+/.opencode-skills/
+/.plugins/

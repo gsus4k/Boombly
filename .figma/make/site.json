@@ -1,0 +1,10 @@
+{
+  "description": "Boombly streamlines food delivery by connecting users with local restaurants, offering a user-friendly interface for quick and convenient orders.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
