@@ -1,43 +1,36 @@
-import { useState } from 'react'
-
-// Autenticación del lado del cliente (demo). Para producción, valida en un backend.
-const CRED_KEY = 'boombly:admin:cred'
-const SESSION_KEY = 'boombly:admin:session'
-const DEFAULT_CRED = { user: 'admin', pass: 'boombly2026' }
-
-type Cred = { user: string; pass: string }
-
-function getCred(): Cred {
-  try {
-    const raw = localStorage.getItem(CRED_KEY)
-    if (raw) return JSON.parse(raw) as Cred
-  } catch {
-    /* ignore */
-  }
-  return DEFAULT_CRED
-}
+import { useEffect, useState } from 'react'
+import { supabase } from '../lib/supabase'
 
 export function useAdminAuth() {
-  const [loggedIn, setLoggedIn] = useState(() => sessionStorage.getItem(SESSION_KEY) === '1')
+  const [loggedIn, setLoggedIn] = useState(false)
+  const [currentUser, setCurrentUser] = useState('')
 
-  const login = (user: string, pass: string) => {
-    const c = getCred()
-    const ok = user.trim() === c.user && pass === c.pass
-    if (ok) {
-      sessionStorage.setItem(SESSION_KEY, '1')
-      setLoggedIn(true)
-    }
-    return ok
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setLoggedIn(Boolean(data.session))
+      setCurrentUser(data.session?.user.email ?? '')
+    })
+
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      setLoggedIn(Boolean(session))
+      setCurrentUser(session?.user.email ?? '')
+    })
+    return () => data.subscription.unsubscribe()
+  }, [])
+
+  const login = async (email: string, pass: string) => {
+    const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: pass })
+    if (error) throw error
+    setLoggedIn(Boolean(data.session))
+    setCurrentUser(data.user?.email ?? '')
+    return Boolean(data.session)
   }
 
-  const logout = () => {
-    sessionStorage.removeItem(SESSION_KEY)
+  const logout = async () => {
+    await supabase.auth.signOut()
     setLoggedIn(false)
+    setCurrentUser('')
   }
 
-  const changeCredentials = (user: string, pass: string) => {
-    localStorage.setItem(CRED_KEY, JSON.stringify({ user: user.trim(), pass }))
-  }
-
-  return { loggedIn, login, logout, changeCredentials, currentUser: getCred().user }
+  return { loggedIn, login, logout, currentUser }
 }

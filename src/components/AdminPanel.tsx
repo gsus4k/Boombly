@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { CATEGORIES, TAGS } from '../data/seed'
 import type { MenuItem, Restaurant } from '../data/types'
 import type { useAdminAuth } from '../data/auth'
@@ -7,6 +7,7 @@ import type { useOrders } from '../data/orders'
 import type { Customer } from '../data/customer'
 import Reports from './Reports'
 import Customers from './Customers'
+import { supabase } from '../lib/supabase'
 
 type Auth = ReturnType<typeof useAdminAuth>
 type Repo = ReturnType<typeof useRestaurants>
@@ -96,9 +97,9 @@ const toForm = (r: Restaurant): FormState => ({
 })
 
 function Login({ auth, onClose }: { auth: Auth; onClose: () => void }) {
-  const [user, setUser] = useState('')
+  const [email, setEmail] = useState('')
   const [pass, setPass] = useState('')
-  const [error, setError] = useState(false)
+  const [error, setError] = useState('')
 
   return (
     <div className="w-full max-w-sm bg-[#111] border border-[#1e1e1e] rounded-2xl p-6 slide-up" onClick={e => e.stopPropagation()}>
@@ -110,27 +111,29 @@ function Login({ auth, onClose }: { auth: Auth; onClose: () => void }) {
         <button onClick={onClose} className="text-[#555] hover:text-white text-xl" aria-label="Cerrar">✕</button>
       </div>
       <form
-        onSubmit={e => {
+        onSubmit={async e => {
           e.preventDefault()
-          setError(!auth.login(user, pass))
+          setError('')
+          try {
+            await auth.login(email, pass)
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'Usuario o clave incorrectos.')
+          }
         }}
         className="space-y-4"
       >
         <div>
-          <label className={labelCls}>Usuario</label>
-          <input className={inputCls} value={user} onChange={e => setUser(e.target.value)} autoComplete="username" autoFocus />
+          <label className={labelCls}>Correo</label>
+          <input className={inputCls} type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="username" autoFocus />
         </div>
         <div>
           <label className={labelCls}>Clave</label>
           <input className={inputCls} type="password" value={pass} onChange={e => setPass(e.target.value)} autoComplete="current-password" />
         </div>
-        {error && <p className="text-red-400 text-sm">Usuario o clave incorrectos.</p>}
+        {error && <p className="text-red-400 text-sm">{error}</p>}
         <button className="w-full bg-[#2563eb] hover:bg-[#1d4ed8] transition-colors py-3 rounded-xl font-display font-black">
           Entrar
         </button>
-        <p className="text-xs text-[#555] text-center">
-          Por defecto: <span className="text-[#888]">admin</span> / <span className="text-[#888]">boombly2026</span> — cámbiala dentro del panel.
-        </p>
       </form>
     </div>
   )
@@ -355,42 +358,224 @@ function RestaurantForm({
   )
 }
 
-function Credentials({ auth }: { auth: Auth }) {
-  const [user, setUser] = useState(auth.currentUser)
-  const [pass, setPass] = useState('')
-  const [msg, setMsg] = useState('')
+type Categoria = { id_categoria: number; nombre: string; emoji: string | null }
+type Repartidor = { id_repartidor: number; nombre: string; telefono: string; disponible: boolean; creado_en: string }
+
+async function requireAdminSession() {
+  const { data } = await supabase.auth.getSession()
+  return Boolean(data.session)
+}
+
+function CategoriesManager() {
+  const [items, setItems] = useState<Categoria[]>([])
+  const [nombre, setNombre] = useState('')
+  const [emoji, setEmoji] = useState('')
+  const [editing, setEditing] = useState<Categoria | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const load = async () => {
+    setLoading(true)
+    const { data, error: loadError } = await supabase.from('categoria').select('*').order('id_categoria')
+    if (loadError) setError(loadError.message)
+    else setItems(data ?? [])
+    setLoading(false)
+  }
+
+  useEffect(() => { void load() }, [])
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const cleanName = nombre.trim()
+    if (!cleanName) return setError('El nombre es obligatorio.')
+    if (!(await requireAdminSession())) return setError('Inicia sesión como administrador')
+    setSaving(true)
+    setError('')
+    const payload = { nombre: cleanName, emoji: emoji.trim() || null }
+    const result = editing
+      ? await supabase.from('categoria').update(payload).eq('id_categoria', editing.id_categoria)
+      : await supabase.from('categoria').insert(payload)
+    setSaving(false)
+    if (result.error) {
+      if (result.error.code === '23505') return setError('Ya existe una categoría con ese nombre')
+      return setError(result.error.message)
+    }
+    setNombre('')
+    setEmoji('')
+    setEditing(null)
+    await load()
+  }
+
+  const remove = async (item: Categoria) => {
+    if (!confirm(`¿Eliminar ${item.nombre}?`)) return
+    if (!(await requireAdminSession())) return setError('Inicia sesión como administrador')
+    setSaving(true)
+    setError('')
+    const { error: removeError } = await supabase.from('categoria').delete().eq('id_categoria', item.id_categoria)
+    setSaving(false)
+    if (removeError) {
+      if (removeError.code === '23503') return setError('No se puede eliminar: hay restaurantes en esta categoría')
+      return setError(removeError.message)
+    }
+    await load()
+  }
 
   return (
-    <form
-      onSubmit={e => {
-        e.preventDefault()
-        if (!user.trim() || pass.length < 6) return setMsg('Usuario requerido y clave de mínimo 6 caracteres.')
-        auth.changeCredentials(user, pass)
-        setPass('')
-        setMsg('Credenciales actualizadas.')
-      }}
-      className="grid sm:grid-cols-[1fr_1fr_auto] gap-3 items-end"
-    >
-      <div>
-        <label className={labelCls}>Usuario</label>
-        <input className={inputCls} value={user} onChange={e => setUser(e.target.value)} />
-      </div>
-      <div>
-        <label className={labelCls}>Nueva clave</label>
-        <input className={inputCls} type="password" value={pass} onChange={e => setPass(e.target.value)} autoComplete="new-password" />
-      </div>
-      <button className="px-5 py-2.5 rounded-xl bg-[#1c1c1c] hover:bg-[#2563eb] transition-colors font-display font-semibold text-sm">
-        Actualizar
-      </button>
-      {msg && <p className="sm:col-span-3 text-xs text-[#3b82f6]">{msg}</p>}
-    </form>
+    <div className="space-y-5">
+      <form onSubmit={save} className="bg-[#141414] border border-[#1e1e1e] rounded-2xl p-4 grid sm:grid-cols-[1fr_120px_auto] gap-3 items-end">
+        <div>
+          <label className={labelCls}>Nombre</label>
+          <input className={inputCls} value={nombre} onChange={e => setNombre(e.target.value)} placeholder="Ej: Comida rápida" />
+        </div>
+        <div>
+          <label className={labelCls}>Emoji</label>
+          <input className={inputCls} value={emoji} onChange={e => setEmoji(e.target.value)} placeholder="🍔" />
+        </div>
+        <button disabled={saving || !nombre.trim()} className="px-5 py-2.5 rounded-xl bg-[#2563eb] disabled:opacity-50 font-display font-black text-sm">
+          {editing ? 'Guardar cambios' : 'Agregar'}
+        </button>
+      </form>
+      {editing && (
+        <button type="button" onClick={() => { setEditing(null); setNombre(''); setEmoji('') }} className="text-xs text-[#888] hover:text-white">
+          Cancelar edición
+        </button>
+      )}
+      {error && <p className="text-red-400 text-sm">{error}</p>}
+      {loading ? <p className="text-[#888] text-sm py-6">Cargando…</p> : (
+        <div className="space-y-2">
+          {items.length === 0 && <p className="text-center text-[#555] py-10 text-sm">No hay categorías.</p>}
+          {items.map(item => (
+            <div key={item.id_categoria} className="flex items-center gap-3 bg-[#141414] border border-[#1e1e1e] rounded-xl p-3">
+              <span className="text-xl w-8 text-center">{item.emoji ?? ''}</span>
+              <p className="font-display font-bold flex-1">{item.nombre}</p>
+              <button disabled={saving} onClick={() => { setEditing(item); setNombre(item.nombre); setEmoji(item.emoji ?? '') }} className="text-xs text-[#3b82f6] hover:text-white px-2 py-1.5">Editar</button>
+              <button disabled={saving} onClick={() => void remove(item)} className="text-xs text-[#666] hover:text-red-400 px-2 py-1.5">Eliminar</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const normalizePhone = (phone: string) => {
+  let digits = phone.replace(/\D/g, '')
+  if (digits.startsWith('0')) digits = `58${digits.slice(1)}`
+  else if (!digits.startsWith('58')) digits = `58${digits}`
+  return digits
+}
+
+function DriversManager() {
+  const [items, setItems] = useState<Repartidor[]>([])
+  const [nombre, setNombre] = useState('')
+  const [telefono, setTelefono] = useState('')
+  const [editing, setEditing] = useState<Repartidor | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const normalizedPhone = normalizePhone(telefono)
+  const validPhone = /^[0-9]{10,15}$/.test(normalizedPhone)
+
+  const load = async () => {
+    setLoading(true)
+    const { data, error: loadError } = await supabase.from('repartidor').select('*').order('creado_en')
+    if (loadError) setError(loadError.message)
+    else setItems(data ?? [])
+    setLoading(false)
+  }
+
+  useEffect(() => { void load() }, [])
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!nombre.trim()) return setError('El nombre es obligatorio.')
+    if (!validPhone) return setError('El teléfono no tiene un formato válido.')
+    if (!(await requireAdminSession())) return setError('Inicia sesión como administrador')
+    setSaving(true)
+    setError('')
+    const payload = { nombre: nombre.trim(), telefono: normalizedPhone }
+    const result = editing
+      ? await supabase.from('repartidor').update(payload).eq('id_repartidor', editing.id_repartidor)
+      : await supabase.from('repartidor').insert({ ...payload, disponible: true })
+    setSaving(false)
+    if (result.error) {
+      if (result.error.code === '23505') return setError('Ese teléfono ya está registrado')
+      return setError(result.error.message)
+    }
+    setNombre('')
+    setTelefono('')
+    setEditing(null)
+    await load()
+  }
+
+  const toggle = async (item: Repartidor) => {
+    if (!(await requireAdminSession())) return setError('Inicia sesión como administrador')
+    setSaving(true)
+    const { error: updateError } = await supabase.from('repartidor').update({ disponible: !item.disponible }).eq('id_repartidor', item.id_repartidor)
+    setSaving(false)
+    if (updateError) return setError(updateError.message)
+    await load()
+  }
+
+  const remove = async (item: Repartidor) => {
+    if (!confirm(`¿Eliminar a ${item.nombre}? Si solo quieres que deje de recibir pedidos, márcalo como No disponible.`)) return
+    if (!(await requireAdminSession())) return setError('Inicia sesión como administrador')
+    setSaving(true)
+    setError('')
+    const { error: removeError } = await supabase.from('repartidor').delete().eq('id_repartidor', item.id_repartidor)
+    setSaving(false)
+    if (removeError) return setError(removeError.message)
+    await load()
+  }
+
+  return (
+    <div className="space-y-5">
+      <form onSubmit={save} className="bg-[#141414] border border-[#1e1e1e] rounded-2xl p-4 grid sm:grid-cols-[1fr_1fr_auto] gap-3 items-end">
+        <div>
+          <label className={labelCls}>Nombre</label>
+          <input className={inputCls} value={nombre} onChange={e => setNombre(e.target.value)} placeholder="Nombre del repartidor" />
+        </div>
+        <div>
+          <label className={labelCls}>Teléfono</label>
+          <input className={inputCls} inputMode="tel" value={telefono} onChange={e => setTelefono(e.target.value)} placeholder="0412-1234567" />
+          <p className={`text-[11px] mt-1.5 ${validPhone ? 'text-[#888]' : 'text-red-400'}`}>Se guardará como: {normalizedPhone || '—'}</p>
+        </div>
+        <button disabled={saving || !nombre.trim() || !validPhone} className="px-5 py-2.5 rounded-xl bg-[#2563eb] disabled:opacity-50 font-display font-black text-sm">
+          {editing ? 'Guardar cambios' : 'Agregar'}
+        </button>
+      </form>
+      {editing && (
+        <button type="button" onClick={() => { setEditing(null); setNombre(''); setTelefono('') }} className="text-xs text-[#888] hover:text-white">
+          Cancelar edición
+        </button>
+      )}
+      {error && <p className="text-red-400 text-sm">{error}</p>}
+      {loading ? <p className="text-[#888] text-sm py-6">Cargando…</p> : (
+        <div className="space-y-2">
+          {items.length === 0 && <p className="text-center text-[#555] py-10 text-sm">No hay repartidores.</p>}
+          {items.map(item => (
+            <div key={item.id_repartidor} className="flex items-center gap-3 bg-[#141414] border border-[#1e1e1e] rounded-xl p-3">
+              <div className="flex-1 min-w-0">
+                <p className="font-display font-bold truncate">{item.nombre}</p>
+                <p className="text-xs text-[#666]">{item.telefono}</p>
+              </div>
+              <button disabled={saving} onClick={() => void toggle(item)} className={`text-xs font-display font-semibold px-3 py-1.5 rounded-lg ${item.disponible ? 'bg-green-500/15 text-green-400' : 'bg-[#1c1c1c] text-[#666]'}`}>
+                {item.disponible ? 'Disponible' : 'No disponible'}
+              </button>
+              <button disabled={saving} onClick={() => { setEditing(item); setNombre(item.nombre); setTelefono(item.telefono) }} className="text-xs text-[#3b82f6] hover:text-white px-2 py-1.5">Editar</button>
+              <button disabled={saving} onClick={() => void remove(item)} className="text-xs text-[#666] hover:text-red-400 px-2 py-1.5">Eliminar</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
 function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth; repo: Repo; ordersRepo: OrdersRepo; customers: Customer[]; onClose: () => void }) {
-  const [tab, setTab] = useState<'restaurantes' | 'clientes' | 'reportes'>('restaurantes')
+  const [tab, setTab] = useState<'restaurantes' | 'clientes' | 'reportes' | 'categorias' | 'repartidores'>('restaurantes')
   const [editing, setEditing] = useState<Restaurant | 'new' | null>(null)
-  const [showCred, setShowCred] = useState(false)
   const [query, setQuery] = useState('')
 
   const list = repo.restaurants.filter(r => r.name.toLowerCase().includes(query.toLowerCase()))
@@ -403,9 +588,6 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
           <p className="text-xs text-[#666]">{repo.restaurants.length} restaurantes · sesión de {auth.currentUser}</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setShowCred(s => !s)} className="text-xs text-[#888] hover:text-white px-3 py-2 rounded-lg border border-[#2a2a2a]">
-            Credenciales
-          </button>
           <button onClick={auth.logout} className="text-xs text-[#888] hover:text-white px-3 py-2 rounded-lg border border-[#2a2a2a]">
             Salir
           </button>
@@ -414,18 +596,22 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
       </div>
 
       <div className="px-5 pt-4 flex gap-2">
-        {(['restaurantes', 'clientes', 'reportes'] as const).map(t => (
+        {(['restaurantes', 'clientes', 'reportes', 'categorias', 'repartidores'] as const).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`px-4 py-2 rounded-lg text-sm font-display font-semibold capitalize transition-colors ${tab === t ? 'bg-[#2563eb] text-white' : 'bg-[#141414] text-[#888] hover:text-white border border-[#2a2a2a]'}`}
           >
-            {t === 'reportes' ? `Reportes (${ordersRepo.orders.length})` : t === 'clientes' ? `Clientes (${customers.length})` : 'Restaurantes'}
+            {t === 'reportes' ? `Reportes (${ordersRepo.orders.length})` : t === 'clientes' ? `Clientes (${customers.length})` : t === 'categorias' ? 'Categorías' : t === 'repartidores' ? 'Repartidores' : 'Restaurantes'}
           </button>
         ))}
       </div>
 
-      {tab === 'clientes' ? (
+      {tab === 'categorias' ? (
+        <div className="p-5"><CategoriesManager /></div>
+      ) : tab === 'repartidores' ? (
+        <div className="p-5"><DriversManager /></div>
+      ) : tab === 'clientes' ? (
         <div className="p-5">
           <Customers restaurants={repo.restaurants} customers={customers} orders={ordersRepo.orders} />
         </div>
@@ -435,12 +621,6 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
         </div>
       ) : (
       <div className="p-5 space-y-5">
-        {showCred && (
-          <div className="bg-[#141414] border border-[#1e1e1e] rounded-2xl p-4">
-            <Credentials auth={auth} />
-          </div>
-        )}
-
         {editing ? (
           <div className="bg-[#141414] border border-[#1e1e1e] rounded-2xl p-5">
             <h3 className="font-display font-black text-lg mb-4">
