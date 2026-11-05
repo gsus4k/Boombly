@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CATEGORIES, TAGS } from '../data/seed'
-import type { MenuItem, Restaurant } from '../data/types'
+import type { Restaurant } from '../data/types'
 import type { useAdminAuth } from '../data/auth'
 import type { useRestaurants } from '../data/repository'
 import type { useOrders } from '../data/orders'
@@ -8,6 +8,16 @@ import type { Customer } from '../data/customer'
 import Reports from './Reports'
 import Customers from './Customers'
 import { supabase } from '../lib/supabase'
+import {
+  cambiarEstadoRestaurante,
+  eliminarProducto,
+  eliminarRestaurante,
+  guardarProducto,
+  ImagenFallida,
+  listarProductos,
+  nuevoIdProducto,
+  type ProductoRestaurante,
+} from '../lib/productos'
 
 type Auth = ReturnType<typeof useAdminAuth>
 type Repo = ReturnType<typeof useRestaurants>
@@ -18,11 +28,6 @@ const FALLBACK_IMG = 'https://images.unsplash.com/photo-1414235077428-338989a2e8
 const inputCls =
   'w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[#2563eb] transition-colors placeholder:text-[#555]'
 const labelCls = 'block text-xs font-display font-semibold text-[#888] uppercase tracking-wider mb-1.5'
-
-type ItemRow = { name: string; price: string; img: string }
-
-const toRows = (items: MenuItem[]): ItemRow[] =>
-  items.map(i => ({ name: i.name, price: String(i.price), img: i.img ?? '' }))
 
 function resizeImage(file: File, max = 480): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -37,6 +42,7 @@ function resizeImage(file: File, max = 480): Promise<string> {
       URL.revokeObjectURL(url)
       resolve(c.toDataURL('image/jpeg', 0.8))
     }
+
     im.onerror = () => reject(new Error('Imagen no válida'))
     im.src = url
   })
@@ -52,7 +58,6 @@ type FormState = {
   lng: string
   tag: string
   img: string
-  items: ItemRow[]
   active: boolean
   pmBanco: string
   pmTelefono: string
@@ -69,10 +74,6 @@ const emptyForm: FormState = {
   lng: '-69.3467',
   tag: 'NUEVO',
   img: '',
-  items: [
-    { name: 'Plato estrella', price: '5.99', img: '' },
-    { name: 'Plato clásico', price: '4.99', img: '' },
-  ],
   active: true,
   pmBanco: '',
   pmTelefono: '',
@@ -89,7 +90,6 @@ const toForm = (r: Restaurant): FormState => ({
   lng: String(r.lng ?? -69.3467),
   tag: r.tag ?? '',
   img: r.img,
-  items: toRows(r.items),
   active: r.active,
   pmBanco: r.pagoMovil?.banco ?? '',
   pmTelefono: r.pagoMovil?.telefono ?? '',
@@ -143,35 +143,32 @@ function RestaurantForm({
   initial,
   onSave,
   onCancel,
+  saving,
+  saveError,
 }: {
   initial: FormState
-  onSave: (data: Omit<Restaurant, 'id' | 'createdAt'>) => void
+  onSave: (data: Omit<Restaurant, 'id' | 'createdAt'>) => void | Promise<void>
   onCancel: () => void
+  saving?: boolean
+  saveError?: string
 }) {
   const [f, setF] = useState<FormState>(initial)
   const [error, setError] = useState('')
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF(p => ({ ...p, [k]: v }))
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const items: MenuItem[] = f.items
-      .filter(r => r.name.trim())
-      .map(r => {
-        const p = parseFloat(r.price.replace(',', '.'))
-        return { name: r.name.trim(), price: Number.isFinite(p) && p >= 0 ? p : 0, img: r.img || undefined }
-      })
     const rating = parseFloat(f.rating)
     const lat = parseFloat(f.lat.replace(',', '.'))
     const lng = parseFloat(f.lng.replace(',', '.'))
     if (!f.name.trim()) return setError('El nombre es obligatorio.')
-    if (items.length === 0) return setError('Agrega al menos un plato .')
     if (!(rating >= 0 && rating <= 5)) return setError('La valoración debe estar entre 0 y 5.')
     if (f.whatsapp.trim() && f.whatsapp.replace(/\D/g, '').length < 10) return setError('El WhatsApp del restaurante no es válido (mínimo 10 dígitos).')
     if (!(lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180)) return setError('Las coordenadas del restaurante no son válidas.')
     const pm = { banco: f.pmBanco.trim(), telefono: f.pmTelefono.trim(), cedula: f.pmCedula.trim() }
     const hasPm = pm.banco || pm.telefono || pm.cedula
     if (hasPm && !(pm.banco && pm.telefono && pm.cedula)) return setError('Completa banco, teléfono y cédula del pago móvil (o deja los tres vacíos).')
-    onSave({
+    await onSave({
       pagoMovil: hasPm ? pm : undefined,
       name: f.name.trim(),
       category: f.category,
@@ -183,7 +180,7 @@ function RestaurantForm({
       lng,
       tag: f.tag || null,
       img: f.img.trim() || FALLBACK_IMG,
-      items,
+      items: [],
       active: f.active,
     })
   }
@@ -268,8 +265,8 @@ function RestaurantForm({
                 if (!file) return
                 try {
                   set('img', await resizeImage(file, 800))
-                } catch {
-                  setError('No se pudo leer la imagen.')
+                } catch (imageError) {
+                  setError(imageError instanceof Error ? imageError.message : 'No se pudo leer la imagen.')
                 }
                 e.target.value = ''
               }}
@@ -278,80 +275,17 @@ function RestaurantForm({
           <img src={f.img || FALLBACK_IMG} alt="Vista previa" className="w-16 h-10 rounded-lg object-cover bg-[#1c1c1c] shrink-0" />
         </div>
       </div>
-      <div className="md:col-span-2">
-        <div className="flex items-center justify-between mb-2">
-          <label className={`${labelCls} mb-0`}>Productos del menú</label>
-          <button
-            type="button"
-            onClick={() => set('items', [...f.items, { name: '', price: '', img: '' }])}
-            className="text-xs text-[#3b82f6] hover:text-white font-display font-semibold"
-          >
-            + Añadir producto
-          </button>
-        </div>
-        <div className="space-y-3">
-          {f.items.map((row, idx) => {
-            const upd = (patch: Partial<ItemRow>) =>
-              set('items', f.items.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
-            return (
-              <div key={idx} className="flex gap-3 bg-[#0a0a0a] border border-[#1e1e1e] rounded-xl p-3">
-                <div className="shrink-0 w-20">
-                  <div className="w-20 h-20 rounded-lg bg-[#1c1c1c] overflow-hidden flex items-center justify-center text-2xl">
-                    {row.img ? <img src={row.img} alt="" className="w-full h-full object-cover" /> : '🍽️'}
-                  </div>
-                  <label className="block mt-1.5 text-center text-[11px] text-[#3b82f6] hover:text-white cursor-pointer font-display font-semibold">
-                    Subir foto
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={async e => {
-                        const file = e.target.files?.[0]
-                        if (!file) return
-                        try {
-                          upd({ img: await resizeImage(file) })
-                        } catch {
-                          setError('No se pudo leer la imagen.')
-                        }
-                        e.target.value = ''
-                      }}
-                    />
-                  </label>
-                </div>
-                <div className="flex-1 grid grid-cols-[1fr_90px] gap-2 content-start min-w-0">
-                  <input className={inputCls} placeholder="Nombre del producto" value={row.name} onChange={e => upd({ name: e.target.value })} />
-                  <input className={inputCls} placeholder="USD" inputMode="decimal" value={row.price} onChange={e => upd({ price: e.target.value })} />
-                  <input
-                    className={`${inputCls} col-span-2`}
-                    placeholder="o pega la URL de la foto (https://...)"
-                    value={row.img.startsWith('data:') ? '' : row.img}
-                    onChange={e => upd({ img: e.target.value })}
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => set('items', f.items.filter((_, i) => i !== idx))}
-                  className="self-start text-[#555] hover:text-red-400 px-1"
-                  aria-label="Quitar producto"
-                >
-                  ✕
-                </button>
-              </div>
-            )
-          })}
-        </div>
-      </div>
       <label className="md:col-span-2 flex items-center gap-2 text-sm text-[#ccc] cursor-pointer">
         <input type="checkbox" checked={f.active} onChange={e => set('active', e.target.checked)} className="accent-[#2563eb] w-4 h-4" />
         Visible para los clientes
       </label>
-      {error && <p className="md:col-span-2 text-red-400 text-sm">{error}</p>}
+      {(error || saveError) && <p className="md:col-span-2 text-red-400 text-sm">{error || saveError}</p>}
       <div className="md:col-span-2 flex gap-3 justify-end">
         <button type="button" onClick={onCancel} className="px-5 py-2.5 rounded-xl border border-[#2a2a2a] text-[#888] hover:text-white font-display font-semibold text-sm">
           Cancelar
         </button>
-        <button className="px-5 py-2.5 rounded-xl bg-[#2563eb] hover:bg-[#1d4ed8] transition-colors font-display font-black text-sm">
-          Guardar restaurante
+        <button disabled={saving} className="px-5 py-2.5 rounded-xl bg-[#2563eb] hover:bg-[#1d4ed8] disabled:opacity-50 transition-colors font-display font-black text-sm">
+          {saving ? 'Guardando…' : 'Guardar restaurante'}
         </button>
       </div>
     </form>
@@ -412,12 +346,17 @@ function CategoriesManager() {
     if (!(await requireAdminSession())) return setError('Inicia sesión como administrador')
     setSaving(true)
     setError('')
-    const { error: removeError } = await supabase.from('categoria').delete().eq('id_categoria', item.id_categoria)
+    const { count, error: removeError } = await supabase
+      .from('categoria')
+      .delete({ count: 'exact' })
+      .eq('id_categoria', item.id_categoria)
     setSaving(false)
     if (removeError) {
+      console.error('[admin] eliminar categoría', removeError)
       if (removeError.code === '23503') return setError('No se puede eliminar: hay restaurantes en esta categoría')
       return setError(removeError.message)
     }
+    if (!count) return setError('La categoría ya no existe o no se pudo eliminar.')
     await load()
   }
 
@@ -523,9 +462,16 @@ function DriversManager() {
     if (!(await requireAdminSession())) return setError('Inicia sesión como administrador')
     setSaving(true)
     setError('')
-    const { error: removeError } = await supabase.from('repartidor').delete().eq('id_repartidor', item.id_repartidor)
+    const { count, error: removeError } = await supabase
+      .from('repartidor')
+      .delete({ count: 'exact' })
+      .eq('id_repartidor', item.id_repartidor)
     setSaving(false)
-    if (removeError) return setError(removeError.message)
+    if (removeError) {
+      console.error('[admin] eliminar repartidor', removeError)
+      return setError(removeError.message)
+    }
+    if (!count) return setError('El repartidor ya no existe o no se pudo eliminar.')
     await load()
   }
 
@@ -573,12 +519,245 @@ function DriversManager() {
   )
 }
 
+function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
+  const [items, setItems] = useState<ProductoRestaurante[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [formOpen, setFormOpen] = useState(false)
+  const [editing, setEditing] = useState<ProductoRestaurante | null>(null)
+  const productIdRef = useRef('')
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [price, setPrice] = useState('')
+  const [available, setAvailable] = useState(true)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [preview, setPreview] = useState('')
+  const [imageFailed, setImageFailed] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const saveLock = useRef(false)
+
+  const load = async () => {
+    setLoading(true)
+    setError('')
+    try {
+      setItems(await listarProductos(restaurantId))
+    } catch (loadError) {
+      console.error('[admin] cargar productos', loadError)
+      setError(loadError instanceof Error ? loadError.message : String(loadError))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { void load() }, [restaurantId])
+
+  const openNew = () => {
+    productIdRef.current = nuevoIdProducto()
+    setEditing(null)
+    setName('')
+    setDescription('')
+    setPrice('')
+    setAvailable(true)
+    setSelectedFile(null)
+    setPreview('')
+    setImageFailed(false)
+    setError('')
+    setFormOpen(true)
+  }
+
+  const openEdit = (item: ProductoRestaurante) => {
+    productIdRef.current = String(item.id_producto)
+    setEditing(item)
+    setName(item.nombre)
+    setDescription(item.descripcion ?? '')
+    setPrice(item.precio.toFixed(2))
+    setAvailable(item.disponible)
+    setSelectedFile(null)
+    setPreview(item.imagen_url ?? '')
+    setImageFailed(false)
+    setError('')
+    setFormOpen(true)
+  }
+
+  const save = async (imageOnly = false) => {
+    if (saveLock.current) return
+    saveLock.current = true
+    setSaving(true)
+    setError('')
+    try {
+      const cleanName = name.trim().replace(/\s+/g, ' ')
+      const cleanDescription = description.trim()
+      const numericPrice = Number(price.replace(',', '.'))
+      if (!imageOnly) {
+        if (!cleanName) throw new Error('El nombre es obligatorio.')
+        if (!cleanDescription) throw new Error('La descripción es obligatoria.')
+        if (cleanDescription.length > 300) throw new Error('La descripción no puede superar 300 caracteres.')
+        if (!Number.isFinite(numericPrice) || numericPrice < 0) throw new Error('El precio debe ser mayor o igual a 0.')
+      }
+
+      await guardarProducto({
+        idRestaurante: restaurantId,
+        idProducto: productIdRef.current,
+        nombre: cleanName,
+        descripcion: cleanDescription,
+        precio: Number(numericPrice.toFixed(2)),
+        disponible: available,
+        imagenUrl: editing?.imagen_url ?? null,
+        archivoImagen: selectedFile,
+      })
+      await load()
+      setFormOpen(false)
+      setImageFailed(false)
+    } catch (saveError) {
+      console.error('[admin] guardar producto', saveError)
+      setError(saveError instanceof Error ? saveError.message : String(saveError))
+      if (saveError instanceof ImagenFallida) {
+        setImageFailed(true)
+        await load()
+      }
+    } finally {
+      saveLock.current = false
+      setSaving(false)
+    }
+  }
+
+  const remove = async (idProducto: string) => {
+    if (!confirm('¿Eliminar este producto?')) return
+    try {
+      const result = await eliminarProducto(restaurantId, idProducto)
+      if (result === 'archivado') setError('Este producto ya está en pedidos: se marcó como No disponible')
+      if (result === 'eliminado' || result === 'no_existia') setError('')
+      await load()
+    } catch (removeError) {
+      console.error('[admin] eliminar producto', removeError)
+      setError(removeError instanceof Error ? removeError.message : String(removeError))
+    }
+  }
+
+  const toggle = async (item: ProductoRestaurante, disponible: boolean) => {
+    try {
+      await guardarProducto({
+        idRestaurante: restaurantId,
+        idProducto: item.id_producto,
+        nombre: item.nombre,
+        descripcion: item.descripcion ?? '',
+        precio: item.precio,
+        disponible,
+        imagenUrl: item.imagen_url,
+      })
+      await load()
+      setError('')
+    } catch (toggleError) {
+      console.error('[admin] disponibilidad producto', toggleError)
+      setError(toggleError instanceof Error ? toggleError.message : String(toggleError))
+    }
+  }
+
+  return (
+    <div className="mt-3 border-t border-[#262626] pt-3">
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="font-display font-bold">Productos</h4>
+        <button type="button" onClick={openNew} className="text-xs text-[#3b82f6] hover:text-white">+ Agregar producto</button>
+      </div>
+      {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+      {loading ? <p className="text-[#777] text-sm">Cargando productos…</p> : (
+        <div className="grid gap-2">
+          {items.map(item => (
+            <div key={item.id_producto} className="flex items-start gap-3 bg-[#0d0d0d] border border-[#222] rounded-xl p-3">
+              {item.imagen_url ? <img src={item.imagen_url} alt="" className="w-14 h-14 rounded-lg object-cover" /> : (
+                <div className="w-14 h-14 rounded-lg bg-[#1c1c1c] grid place-items-center font-display font-black">{item.nombre.charAt(0).toUpperCase()}</div>
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="font-display font-bold">{item.nombre}</p>
+                <p className="text-xs text-[#777] line-clamp-2">{item.descripcion}</p>
+                <p className="text-sm text-[#3b82f6] mt-1">$ {item.precio.toFixed(2)}</p>
+              </div>
+              <label className="text-[11px] text-[#888] text-center">
+                <input type="checkbox" checked={item.disponible} onChange={event => void toggle(item, event.target.checked)} />
+                <span className="block mt-1">{item.disponible ? 'Disponible' : 'No disponible'}</span>
+              </label>
+              <button type="button" onClick={() => openEdit(item)} className="text-xs text-[#3b82f6]">Editar</button>
+              <button type="button" onClick={() => void remove(item.id_producto)} className="text-xs text-red-400">Eliminar</button>
+            </div>
+          ))}
+          {items.length === 0 && <p className="text-center text-[#666] text-sm py-4">No hay productos.</p>}
+        </div>
+      )}
+      {formOpen && (
+        <form onSubmit={event => { event.preventDefault(); void save() }} className="mt-3 bg-[#0d0d0d] border border-[#222] rounded-xl p-4 grid gap-3">
+          <div>
+            <label className={labelCls}>Nombre *</label>
+            <input className={inputCls} value={name} onChange={event => setName(event.target.value)} maxLength={100} required />
+          </div>
+          <div>
+            <label className={labelCls}>Descripción *</label>
+            <textarea className={`${inputCls} resize-y min-h-24`} value={description} maxLength={300} onChange={event => setDescription(event.target.value)} required />
+            <p className="text-right text-[11px] text-[#777]">{description.length}/300</p>
+          </div>
+          <div>
+            <label className={labelCls}>Precio *</label>
+            <input className={inputCls} type="number" min="0" step="0.01" value={price} onChange={event => setPrice(event.target.value)} required />
+          </div>
+          <div className="flex items-center gap-3">
+            <input type="file" accept="image/jpeg,image/png,image/webp" onChange={event => {
+              const file = event.target.files?.[0] ?? null
+              setSelectedFile(file)
+              if (file) setPreview(URL.createObjectURL(file))
+              else if (!editing) setPreview('')
+            }} />
+            {preview && <img src={preview} alt="Vista previa" className="w-16 h-16 rounded-lg object-cover" />}
+          </div>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={available} onChange={event => setAvailable(event.target.checked)} /> Disponible</label>
+          <div className="flex gap-2">
+            <button type="submit" disabled={saving} className="bg-[#2563eb] disabled:opacity-60 px-4 py-2 rounded-lg text-sm font-bold">{saving ? 'Guardando…' : 'Guardar'}</button>
+            {imageFailed && selectedFile && <button type="button" disabled={saving} onClick={() => void save(true)} className="text-sm text-[#3b82f6]">Reintentar solo imagen</button>}
+            <button type="button" disabled={saving} onClick={() => setFormOpen(false)} className="px-4 py-2 text-sm text-[#888]">Cancelar</button>
+          </div>
+        </form>
+      )}
+    </div>
+  )
+}
+
 function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth; repo: Repo; ordersRepo: OrdersRepo; customers: Customer[]; onClose: () => void }) {
   const [tab, setTab] = useState<'restaurantes' | 'clientes' | 'reportes' | 'categorias' | 'repartidores'>('restaurantes')
   const [editing, setEditing] = useState<Restaurant | 'new' | null>(null)
   const [query, setQuery] = useState('')
+  const [savingMenu, setSavingMenu] = useState(false)
+  const [menuError, setMenuError] = useState('')
+  const [expandedProducts, setExpandedProducts] = useState<string[]>([])
 
   const list = repo.restaurants.filter(r => r.name.toLowerCase().includes(query.toLowerCase()))
+
+  const saveMenu = async (restaurant: Omit<Restaurant, 'id' | 'createdAt'>) => {
+    setSavingMenu(true)
+    setMenuError('')
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      if (!sessionData.session) {
+        setMenuError('Inicia sesión como administrador')
+        setSavingMenu(false)
+        return
+      }
+    } catch (error) {
+      console.error('[guardar producto] paso 1: sesión', error)
+      setMenuError(`Paso 1 (sesión): ${error instanceof Error ? error.message : String(error)}`)
+      setSavingMenu(false)
+      return
+    }
+
+    try {
+      if (editing === 'new') await repo.add(restaurant)
+      else if (editing) await repo.update(editing.id, restaurant)
+      setEditing(null)
+    } catch (error) {
+      console.error('[admin] guardar restaurante', error)
+      setMenuError(error instanceof Error ? error.message : 'No se pudo guardar el restaurante.')
+    } finally {
+      setSavingMenu(false)
+    }
+  }
 
   return (
     <div className="w-full max-w-5xl max-h-[92vh] overflow-y-auto bg-[#111] border border-[#1e1e1e] rounded-2xl slide-up" onClick={e => e.stopPropagation()}>
@@ -629,11 +808,9 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
             <RestaurantForm
               initial={editing === 'new' ? emptyForm : toForm(editing)}
               onCancel={() => setEditing(null)}
-              onSave={data => {
-                if (editing === 'new') repo.add(data)
-                else repo.update(editing.id, data)
-                setEditing(null)
-              }}
+              saving={savingMenu}
+              saveError={menuError}
+              onSave={data => saveMenu(data)}
             />
           </div>
         ) : (
@@ -651,27 +828,55 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
             <div className="space-y-2">
               {list.length === 0 && <p className="text-center text-[#555] py-10 text-sm">No hay restaurantes.</p>}
               {list.map(r => (
-                <div key={r.id} className="flex items-center gap-3 bg-[#141414] border border-[#1e1e1e] rounded-xl p-3">
+                <div key={r.id} className="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3">
+                  <div className="flex items-center gap-3">
                   <img src={r.img} alt={r.name} className="w-16 h-12 rounded-lg object-cover bg-[#1c1c1c] shrink-0" />
                   <div className="flex-1 min-w-0">
                     <p className="font-display font-bold truncate">{r.name}</p>
+                    {!r.active && <span className="text-[11px] text-amber-400">Inactivo</span>}
                     <p className="text-xs text-[#666] truncate">
                       {CATEGORIES.find(c => c.id === r.category)?.label} · {r.items.length} platos · ★ {r.rating}
                     </p>
                   </div>
                   <button
-                    onClick={() => repo.update(r.id, { active: !r.active })}
+                    onClick={async () => {
+                      if (r.active) return
+                      try {
+                        await cambiarEstadoRestaurante(r.id, true)
+                        await repo.reload()
+                      } catch (activationError) {
+                        console.error('[admin] activar restaurante', activationError)
+                        setMenuError(activationError instanceof Error ? activationError.message : String(activationError))
+                      }
+                    }}
                     className={`text-xs font-display font-semibold px-3 py-1.5 rounded-lg ${r.active ? 'bg-green-500/15 text-green-400' : 'bg-[#1c1c1c] text-[#666]'}`}
                   >
-                    {r.active ? 'Visible' : 'Oculto'}
+                    {r.active ? 'Visible' : 'Activar'}
                   </button>
                   <button onClick={() => setEditing(r)} className="text-xs text-[#3b82f6] hover:text-white px-2 py-1.5">Editar</button>
                   <button
-                    onClick={() => confirm(`¿Eliminar ${r.name}?`) && repo.remove(r.id)}
+                    onClick={async () => {
+                      if (!confirm('¿Eliminar este restaurante?')) return
+                      console.count('[admin] eliminar restaurante')
+                      try {
+                        const result = await eliminarRestaurante(r.id)
+                        if (result === 'desactivado') setMenuError('Este restaurante tiene pedidos y no se puede eliminar: se desactivó')
+                        else if (result === 'eliminado' || result === 'no_existia') setMenuError('')
+                        await repo.reload()
+                      } catch (error) {
+                        console.error('[admin] eliminar restaurante', error)
+                        setMenuError(error instanceof Error ? error.message : String(error))
+                      }
+                    }}
                     className="text-xs text-[#666] hover:text-red-400 px-2 py-1.5"
                   >
                     Eliminar
                   </button>
+                  <button onClick={() => setExpandedProducts(ids => ids.includes(r.id) ? ids.filter(id => id !== r.id) : [...ids, r.id])} className="text-xs text-[#888]">
+                    {expandedProducts.includes(r.id) ? 'Ocultar productos' : 'Productos'}
+                  </button>
+                  </div>
+                  {expandedProducts.includes(r.id) && <RestaurantProducts restaurantId={r.id} />}
                 </div>
               ))}
             </div>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { guardarProducto, listarProductos } from '../lib/productos'
 
 const inputCls =
   'w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-xl px-3 py-3 text-sm outline-none focus:border-[#2563eb] transition-colors placeholder:text-[#555]'
@@ -9,27 +10,17 @@ type AssignedRestaurant = {
   id_restaurante: string
   restaurante: RestaurantRelation
 }
-type ProductRelation = {
-  nombre?: string | null
-  descripcion?: string | null
-  imagen_url?: string | null
-} | Array<{
-  nombre?: string | null
-  descripcion?: string | null
-  imagen_url?: string | null
-}> | null
 type Product = {
   id_producto: string
-  precio: number | string
+  precio: number
   disponible: boolean
-  producto: ProductRelation
+  nombre: string
+  descripcion: string | null
+  imagen_url: string | null
 }
 
 const relatedName = (relation: RestaurantRelation | undefined) =>
   (Array.isArray(relation) ? relation[0]?.nombre : relation?.nombre) ?? 'Restaurante'
-
-const relatedProduct = (relation: ProductRelation) =>
-  Array.isArray(relation) ? relation[0] : relation
 
 export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   const [email, setEmail] = useState('')
@@ -47,17 +38,17 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   const loadProducts = async (idRestaurante: string) => {
     setLoadingProducts(true)
     setError('')
-    const { data, error: queryError } = await supabase
-      .from('detalle_producto')
-      .select('id_producto, precio, disponible, producto(nombre, descripcion, imagen_url)')
-      .eq('id_restaurante', idRestaurante)
-
-    setLoadingProducts(false)
-    if (queryError) {
-      setError(queryError.message)
+    let loaded: Product[] = []
+    try {
+      loaded = (await listarProductos(idRestaurante)).map(item => ({ ...item }))
+    } catch (queryError) {
+      setLoadingProducts(false)
+      console.error('[restaurant] cargar productos', queryError)
+      setError(queryError instanceof Error ? queryError.message : String(queryError))
       return
     }
-    setProducts((data ?? []) as Product[])
+    setLoadingProducts(false)
+    setProducts(loaded)
   }
 
   const loadRestaurants = async () => {
@@ -121,24 +112,61 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     void loadProducts(id)
   }
 
+  useEffect(() => {
+    const channel = supabase
+      .channel('productos-imagenes')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'producto' }, payload => {
+        const updated = payload.new as { id_producto?: string | number; nombre?: string | null; descripcion?: string | null; imagen_url?: string | null }
+        if (updated.id_producto == null) return
+        setProducts(items => items.map(item =>
+          String(item.id_producto) === String(updated.id_producto)
+            ? {
+                ...item,
+                nombre: updated.nombre ?? item.nombre,
+                descripcion: updated.descripcion ?? item.descripcion,
+                imagen_url: updated.imagen_url ?? item.imagen_url,
+              }
+            : item,
+        ))
+      })
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [])
+
+  useEffect(() => {
+    const refreshOnFocus = () => {
+      if (restaurantId) void loadProducts(restaurantId)
+    }
+    window.addEventListener('focus', refreshOnFocus)
+    return () => window.removeEventListener('focus', refreshOnFocus)
+  }, [restaurantId])
+
   const toggleAvailability = async (productId: string, disponible: boolean) => {
-    const previous = products
-    setProducts(items => items.map(item => item.id_producto === productId ? { ...item, disponible } : item))
     setUpdatingIds(ids => [...ids, productId])
     setError('')
 
-    const { error: rpcError } = await supabase.rpc('marcar_disponibilidad', {
-      p_id_restaurante: restaurantId,
-      p_id_producto: productId,
-      p_disponible: disponible,
-    })
-
-    setUpdatingIds(ids => ids.filter(id => id !== productId))
-    if (rpcError) {
-      setProducts(previous)
-      setError(rpcError.message)
-    } else {
+    const item = products.find(product => product.id_producto === productId)
+    try {
+      if (!item) throw new Error('El producto ya no existe.')
+      await guardarProducto({
+        idRestaurante: restaurantId,
+        idProducto: productId,
+        nombre: item.nombre,
+        descripcion: item.descripcion ?? '',
+        precio: item.precio,
+        disponible,
+        imagenUrl: item.imagen_url,
+      })
+      await loadProducts(restaurantId)
       window.dispatchEvent(new Event('boombly:products-updated'))
+    } catch (updateError) {
+      console.error('[restaurant] disponibilidad producto', updateError)
+      setError(updateError instanceof Error ? updateError.message : String(updateError))
+    } finally {
+      setUpdatingIds(ids => ids.filter(id => id !== productId))
     }
   }
 
@@ -181,6 +209,16 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
         ) : (
           <>
             <div className="flex items-center justify-end mb-4">
+              {restaurantId && (
+                <button
+                  type="button"
+                  onClick={() => void loadProducts(restaurantId)}
+                  disabled={loadingProducts}
+                  className="mr-auto text-xs text-[#888] hover:text-white border border-[#2a2a2a] disabled:opacity-50 rounded-xl px-3 py-2"
+                >
+                  Actualizar
+                </button>
+              )}
               <button onClick={() => void signOut()} className="text-xs text-[#888] hover:text-white border border-[#2a2a2a] rounded-xl px-3 py-2">
                 Cerrar sesión
               </button>
@@ -244,17 +282,18 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
 
                 <div className="grid gap-3">
                   {products.map(item => {
-                    const product = relatedProduct(item.producto)
                     return (
                       <div key={item.id_producto} className="flex items-center gap-4 bg-[#141414] border border-[#1e1e1e] rounded-2xl p-3">
-                        {product?.imagen_url ? (
-                          <img src={product.imagen_url} alt="" className="w-16 h-16 rounded-xl object-cover shrink-0" />
+                        {item.imagen_url ? (
+                          <img src={item.imagen_url} alt={item.nombre} loading="lazy" className="w-16 h-16 rounded-xl object-cover shrink-0" />
                         ) : (
-                          <div className="w-16 h-16 rounded-xl bg-[#1c1c1c] grid place-items-center text-2xl shrink-0">🍽️</div>
+                          <div className="w-16 h-16 rounded-xl bg-[#1c1c1c] grid place-items-center text-xl font-display font-black shrink-0">
+                            {(item.nombre.trim().charAt(0) || 'P').toUpperCase()}
+                          </div>
                         )}
                         <div className="min-w-0 flex-1">
-                          <h3 className="font-display font-bold truncate">{product?.nombre ?? 'Producto'}</h3>
-                          {product?.descripcion && <p className="text-xs text-[#777] line-clamp-2 mt-1">{product.descripcion}</p>}
+                          <h3 className="font-display font-bold truncate">{item.nombre}</h3>
+                          {item.descripcion && <p className="text-xs text-[#777] line-clamp-2 mt-1">{item.descripcion}</p>}
                           <p className="text-sm text-[#3b82f6] font-bold mt-1">$ {Number(item.precio).toFixed(2)}</p>
                         </div>
                         <label className="flex flex-col items-center gap-1 text-[11px] text-[#888] shrink-0">

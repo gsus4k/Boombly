@@ -96,7 +96,7 @@ export default function App() {
     if (!r.active) return false
     const matchCat = activeCategory === 'all' || r.category === activeCategory
     const matchSearch = r.name.toLowerCase().includes(search.toLowerCase()) ||
-      r.items.some(i => i.name.toLowerCase().includes(search.toLowerCase()))
+      r.items.some(i => i.name.toLowerCase().includes(search.toLowerCase()) || i.description?.toLowerCase().includes(search.toLowerCase()))
     return matchCat && matchSearch
   })
 
@@ -472,6 +472,7 @@ export default function App() {
                       </div>
                       <div className="min-w-0">
                         <p className="font-display font-semibold text-sm truncate">{item.name}</p>
+                        {item.description && <p className="text-[11px] text-[#777] line-clamp-2 mt-0.5">{item.description}</p>}
                         <p className="text-[#3b82f6] text-xs font-bold">$ {item.price.toFixed(2)}</p>
                         {item.available === false && (
                           <span className="inline-block mt-1 text-[10px] font-bold uppercase tracking-wide text-red-400">Agotado</span>

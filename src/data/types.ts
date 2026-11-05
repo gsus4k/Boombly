@@ -1,6 +1,6 @@
 export type Category = { id: string; label: string; emoji: string }
 
-export type MenuItem = { name: string; price: number; img?: string; available?: boolean }
+export type MenuItem = { name: string; description?: string; price: number; img?: string; available?: boolean }
 
 export type PagoMovilInfo = { banco: string; telefono: string; cedula: string }
 
