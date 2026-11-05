@@ -15,7 +15,7 @@ export type ProductoRestaurante = {
   imagen_url: string | null
 }
 
-export type DatosProducto =  
+export type DatosProducto =
 {
   idRestaurante: string
   idProducto: string // créalo UNA vez con nuevoIdProducto() al abrir el formulario y reutilízalo en cada guardado
