@@ -10,6 +10,7 @@ export type ProductoRestaurante = {
   id_producto: string
   precio: number
   disponible: boolean
+  stock: number | null
   nombre: string
   descripcion: string | null
   imagen_url: string | null
@@ -41,7 +42,7 @@ function mensajeError(error: { code?: string; message?: string }): string {
 export async function listarProductos(idRestaurante: string): Promise<ProductoRestaurante[]> {
   const { data, error } = await supabase
     .from('detalle_producto')
-    .select('id_producto, precio, disponible, producto(nombre, descripcion, imagen_url)')
+    .select('id_producto, precio, disponible, stock, producto(nombre, descripcion, imagen_url)')
     .eq('id_restaurante', idRestaurante)
   if (error) throw new Error(mensajeError(error))
   return (data ?? [])
@@ -51,6 +52,7 @@ export async function listarProductos(idRestaurante: string): Promise<ProductoRe
         id_producto: d.id_producto as string,
         precio: Number(d.precio),
         disponible: Boolean(d.disponible),
+        stock: d.stock === null || d.stock === undefined ? null : Number(d.stock),
         nombre: (p?.nombre ?? '') as string,
         descripcion: (p?.descripcion ?? null) as string | null,
         imagen_url: (p?.imagen_url ?? null) as string | null,
@@ -138,4 +140,18 @@ export async function cambiarEstadoRestaurante(idRestaurante: string, activo: bo
     .select('id_restaurante')
   if (error) throw new Error(mensajeError(error))
   if (!data || data.length === 0) throw new Error('No se pudo cambiar el estado: sin permiso o el restaurante no existe')
+}
+
+export async function ajustarStock(idRestaurante: string, idProducto: string, stock: number | null): Promise<void> {
+  const { error } = await supabase.rpc('ajustar_stock', { p_id_restaurante: idRestaurante, p_id_producto: idProducto, p_stock: stock })
+  if (error) throw new Error(error.code === 'PGRST202' ? 'Falta una función en la base de datos' : error.message)
+}
+
+export async function marcarDisponibilidad(idRestaurante: string, idProducto: string, disponible: boolean): Promise<void> {
+  const { error } = await supabase.rpc('marcar_disponibilidad', {
+    p_id_restaurante: idRestaurante,
+    p_id_producto: idProducto,
+    p_disponible: disponible,
+  })
+  if (error) throw new Error(error.code === 'PGRST202' ? 'Falta una función en la base de datos' : error.message)
 }

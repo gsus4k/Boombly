@@ -11,10 +11,10 @@ export function useRestaurants() {
   const syncAvailability = useCallback(async () => {
     const { data, error } = await supabase
       .from('restaurante')
-      .select('*, detalle_producto(precio, disponible, producto(*))')
+      .select('*, detalle_producto(id_producto, precio, disponible, stock, producto(*))')
     if (error) {
       console.error('[restaurants] cargar', error)
-      return
+      return []
     }
 
     const mapped = (data ?? []).map((row, index) => ({
@@ -29,16 +29,20 @@ export function useRestaurants() {
       items: (row.detalle_producto ?? []).flatMap((detail: {
         precio: number | string
         disponible: boolean
+        id_producto?: string | number
+        stock?: number | string | null
         producto: { nombre?: string; descripcion?: string; imagen_url?: string } | Array<{ nombre?: string; descripcion?: string; imagen_url?: string }> | null
       }) => {
         const product = Array.isArray(detail.producto) ? detail.producto[0] : detail.producto
         if (!product?.nombre) return []
         return [{
+          id: detail.id_producto == null ? undefined : String(detail.id_producto),
           name: product.nombre,
           description: product.descripcion ?? undefined,
           price: Number(detail.precio),
           img: product.imagen_url ?? undefined,
           available: detail.disponible !== false,
+          stock: detail.stock === null || detail.stock === undefined ? null : Number(detail.stock),
         }]
       }),
       active: row.activo !== false,
@@ -54,6 +58,7 @@ export function useRestaurants() {
     })) as Restaurant[]
 
     setRestaurants(mapped)
+    return mapped
   }, [])
 
   useEffect(() => {
@@ -72,7 +77,7 @@ export function useRestaurants() {
   }, [syncAvailability])
 
   const reload = useCallback(async () => {
-    await syncAvailability()
+    return await syncAvailability()
   }, [syncAvailability])
 
   const add = useCallback(async (data: Omit<Restaurant, 'id' | 'createdAt'>) => {

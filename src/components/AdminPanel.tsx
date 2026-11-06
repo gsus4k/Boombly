@@ -13,6 +13,8 @@ import {
   eliminarProducto,
   eliminarRestaurante,
   guardarProducto,
+  ajustarStock,
+  marcarDisponibilidad,
   ImagenFallida,
   listarProductos,
   nuevoIdProducto,
@@ -530,6 +532,7 @@ function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
   const [description, setDescription] = useState('')
   const [price, setPrice] = useState('')
   const [available, setAvailable] = useState(true)
+  const [stock, setStock] = useState('')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [preview, setPreview] = useState('')
   const [imageFailed, setImageFailed] = useState(false)
@@ -558,6 +561,7 @@ function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
     setDescription('')
     setPrice('')
     setAvailable(true)
+    setStock('')
     setSelectedFile(null)
     setPreview('')
     setImageFailed(false)
@@ -572,6 +576,7 @@ function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
     setDescription(item.descripcion ?? '')
     setPrice(item.precio.toFixed(2))
     setAvailable(item.disponible)
+    setStock(item.stock === null ? '' : String(item.stock))
     setSelectedFile(null)
     setPreview(item.imagen_url ?? '')
     setImageFailed(false)
@@ -605,11 +610,19 @@ function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
         imagenUrl: editing?.imagen_url ?? null,
         archivoImagen: selectedFile,
       })
+      if (stock.trim() !== '') {
+        const numericStock = Number(stock)
+        if (!Number.isInteger(numericStock) || numericStock < 0 || numericStock > 100000) throw new Error('La cantidad debe ser un entero entre 0 y 100000.')
+        console.log('[stock] guardando', { idRestaurante: restaurantId, idProducto: productIdRef.current, numero: numericStock })
+        await ajustarStock(restaurantId, productIdRef.current, numericStock)
+      } else {
+        throw new Error('Escribe una cantidad')
+      }
       await load()
       setFormOpen(false)
       setImageFailed(false)
     } catch (saveError) {
-      console.error('[admin] guardar producto', saveError)
+      console.error('[stock] guardar producto', saveError)
       setError(saveError instanceof Error ? saveError.message : String(saveError))
       if (saveError instanceof ImagenFallida) {
         setImageFailed(true)
@@ -635,21 +648,41 @@ function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
   }
 
   const toggle = async (item: ProductoRestaurante, disponible: boolean) => {
+    if (saveLock.current) return
+    saveLock.current = true
+    setSaving(true)
+    setError('')
     try {
-      await guardarProducto({
-        idRestaurante: restaurantId,
-        idProducto: item.id_producto,
-        nombre: item.nombre,
-        descripcion: item.descripcion ?? '',
-        precio: item.precio,
-        disponible,
-        imagenUrl: item.imagen_url,
-      })
+      await marcarDisponibilidad(restaurantId, item.id_producto, disponible)
       await load()
       setError('')
     } catch (toggleError) {
-      console.error('[admin] disponibilidad producto', toggleError)
+      console.error('[stock] marcar disponibilidad', toggleError)
       setError(toggleError instanceof Error ? toggleError.message : String(toggleError))
+    } finally {
+      saveLock.current = false
+      setSaving(false)
+    }
+  }
+
+  const setUnlimited = async () => {
+    if (!editing || saveLock.current) return
+    saveLock.current = true
+    setSaving(true)
+    setError('')
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      if (!sessionData.session) throw new Error('Inicia sesión para cambiar la cantidad.')
+      console.log('[stock] guardando', { idRestaurante: restaurantId, idProducto: productIdRef.current, numero: null })
+      await ajustarStock(restaurantId, productIdRef.current, null)
+      await load()
+      setStock('')
+    } catch (stockError) {
+      console.error('[stock] sin límite', stockError)
+      setError(stockError instanceof Error ? stockError.message : String(stockError))
+    } finally {
+      saveLock.current = false
+      setSaving(false)
     }
   }
 
@@ -671,6 +704,7 @@ function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
                 <p className="font-display font-bold">{item.nombre}</p>
                 <p className="text-xs text-[#777] line-clamp-2">{item.descripcion}</p>
                 <p className="text-sm text-[#3b82f6] mt-1">$ {item.precio.toFixed(2)}</p>
+                <p className="text-xs text-[#aaa] mt-1">{item.stock === null ? 'Sin límite' : item.stock === 0 ? 'Agotado' : `Quedan ${item.stock}`}</p>
               </div>
               <label className="text-[11px] text-[#888] text-center">
                 <input type="checkbox" checked={item.disponible} onChange={event => void toggle(item, event.target.checked)} />
@@ -698,6 +732,10 @@ function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
             <label className={labelCls}>Precio *</label>
             <input className={inputCls} type="number" min="0" step="0.01" value={price} onChange={event => setPrice(event.target.value)} required />
           </div>
+          <div>
+            <label className={labelCls}>Cantidad disponible</label>
+            <input className={inputCls} type="number" min="0" max="100000" step="1" value={stock} onChange={event => setStock(event.target.value)} placeholder="Cantidad" />
+          </div>
           <div className="flex items-center gap-3">
             <input type="file" accept="image/jpeg,image/png,image/webp" onChange={event => {
               const file = event.target.files?.[0] ?? null
@@ -710,6 +748,7 @@ function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={available} onChange={event => setAvailable(event.target.checked)} /> Disponible</label>
           <div className="flex gap-2">
             <button type="submit" disabled={saving} className="bg-[#2563eb] disabled:opacity-60 px-4 py-2 rounded-lg text-sm font-bold">{saving ? 'Guardando…' : 'Guardar'}</button>
+            {editing && <button type="button" disabled={saving} onClick={() => void setUnlimited()} className="border border-[#333] disabled:opacity-60 px-4 py-2 rounded-lg text-sm">Sin límite</button>}
             {imageFailed && selectedFile && <button type="button" disabled={saving} onClick={() => void save(true)} className="text-sm text-[#3b82f6]">Reintentar solo imagen</button>}
             <button type="button" disabled={saving} onClick={() => setFormOpen(false)} className="px-4 py-2 text-sm text-[#888]">Cancelar</button>
           </div>

@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import { guardarProducto, listarProductos } from '../lib/productos'
+import { ajustarStock, listarProductos, marcarDisponibilidad } from '../lib/productos'
 
 const inputCls =
   'w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-xl px-3 py-3 text-sm outline-none focus:border-[#2563eb] transition-colors placeholder:text-[#555]'
@@ -14,6 +14,7 @@ type Product = {
   id_producto: string
   precio: number
   disponible: boolean
+  stock: number | null
   nombre: string
   descripcion: string | null
   imagen_url: string | null
@@ -34,6 +35,9 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   const [restaurantId, setRestaurantId] = useState('')
   const [products, setProducts] = useState<Product[]>([])
   const [updatingIds, setUpdatingIds] = useState<string[]>([])
+  const [stockInputs, setStockInputs] = useState<Record<string, string>>({})
+  const stockLock = useRef(false)
+  const [sessionEmail, setSessionEmail] = useState('')
 
   const loadProducts = async (idRestaurante: string) => {
     setLoadingProducts(true)
@@ -74,6 +78,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) {
         setLoggedIn(true)
+        setSessionEmail(data.session.user.email ?? '')
         void loadRestaurants()
       }
     })
@@ -89,7 +94,9 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
       setError(signInError.message)
       return
     }
+    const { data: sessionData } = await supabase.auth.getSession()
     setLoggedIn(true)
+    setSessionEmail(sessionData.session?.user.email ?? email)
     await loadRestaurants()
   }
 
@@ -104,6 +111,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     setRestaurants([])
     setRestaurantId('')
     setProducts([])
+    setSessionEmail('')
   }
 
   const changeRestaurant = (id: string) => {
@@ -144,6 +152,24 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener('focus', refreshOnFocus)
   }, [restaurantId])
 
+  useEffect(() => {
+    if (!restaurantId) return
+    const channel = supabase
+      .channel(`stock-${restaurantId}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'detalle_producto', filter: `id_restaurante=eq.${restaurantId}` }, payload => {
+        const updated = payload.new as { id_producto?: string; stock?: number | null; disponible?: boolean }
+        if (updated.id_producto == null) return
+        setProducts(items => items.map(item => String(item.id_producto) === String(updated.id_producto)
+          ? { ...item, stock: updated.stock === null || updated.stock === undefined ? null : Number(updated.stock), disponible: updated.disponible ?? item.disponible }
+          : item))
+      })
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [restaurantId])
+
   const toggleAvailability = async (productId: string, disponible: boolean) => {
     setUpdatingIds(ids => [...ids, productId])
     setError('')
@@ -151,21 +177,40 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     const item = products.find(product => product.id_producto === productId)
     try {
       if (!item) throw new Error('El producto ya no existe.')
-      await guardarProducto({
-        idRestaurante: restaurantId,
-        idProducto: productId,
-        nombre: item.nombre,
-        descripcion: item.descripcion ?? '',
-        precio: item.precio,
-        disponible,
-        imagenUrl: item.imagen_url,
-      })
+      const { data: sessionData } = await supabase.auth.getSession()
+      if (!sessionData.session) throw new Error('Inicia sesión para cambiar la disponibilidad.')
+      await marcarDisponibilidad(restaurantId, productId, disponible)
       await loadProducts(restaurantId)
       window.dispatchEvent(new Event('boombly:products-updated'))
     } catch (updateError) {
-      console.error('[restaurant] disponibilidad producto', updateError)
+      console.error('[stock] marcar disponibilidad', updateError)
       setError(updateError instanceof Error ? updateError.message : String(updateError))
     } finally {
+      setUpdatingIds(ids => ids.filter(id => id !== productId))
+    }
+
+  }
+
+  const saveStock = async (productId: string, stock: number | null) => {
+    if (stockLock.current) return
+    stockLock.current = true
+    setUpdatingIds(ids => [...ids, productId])
+    setError('')
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      if (!sessionData.session) throw new Error('Inicia sesión para cambiar la cantidad.')
+      if (stock !== null && (!Number.isInteger(stock) || stock < 0 || stock > 100000)) {
+        throw new Error('La cantidad debe ser un entero entre 0 y 100000.')
+      }
+      const numero = stock
+      console.log('[stock] guardando', { idRestaurante: restaurantId, idProducto: productId, numero })
+      await ajustarStock(restaurantId, productId, stock)
+      await loadProducts(restaurantId)
+    } catch (stockError) {
+      console.error('[stock] guardar cantidad', stockError)
+      setError(stockError instanceof Error ? stockError.message : String(stockError))
+    } finally {
+      stockLock.current = false
       setUpdatingIds(ids => ids.filter(id => id !== productId))
     }
   }
@@ -177,6 +222,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
           <div>
             <p className="text-[#3b82f6] text-xs uppercase tracking-widest font-bold">Restaurante</p>
             <h2 className="font-display font-black text-xl sm:text-2xl">Panel del restaurante</h2>
+            {loggedIn && sessionEmail && <p className="text-xs text-[#888] mt-1">{sessionEmail}</p>}
           </div>
           <button type="button" onClick={onClose} aria-label="Cerrar" className="text-[#777] hover:text-white text-xl">✕</button>
         </div>
@@ -295,6 +341,38 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
                           <h3 className="font-display font-bold truncate">{item.nombre}</h3>
                           {item.descripcion && <p className="text-xs text-[#777] line-clamp-2 mt-1">{item.descripcion}</p>}
                           <p className="text-sm text-[#3b82f6] font-bold mt-1">$ {Number(item.precio).toFixed(2)}</p>
+                          <span className={`inline-block mt-2 text-[10px] font-bold uppercase rounded-full px-2 py-1 ${item.stock === 0 ? 'bg-red-500/15 text-red-400' : item.stock !== null && item.stock <= 5 ? 'bg-yellow-500/15 text-yellow-400' : 'bg-[#1f1f1f] text-[#aaa]'}`}>
+                            {item.stock === null ? 'Sin límite' : item.stock === 0 ? 'Agotado' : `Quedan ${item.stock}`}
+                          </span>
+                          <div className="flex flex-wrap items-center gap-2 mt-2">
+                            <input
+                              type="number"
+                              min="0"
+                              max="100000"
+                              step="1"
+                              value={stockInputs[item.id_producto] ?? (item.stock === null ? '' : String(item.stock))}
+                              onChange={event => setStockInputs(inputs => ({ ...inputs, [item.id_producto]: event.target.value }))}
+                              className="w-24 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-2 py-2 text-sm"
+                            />
+                            <button
+                              type="button"
+                              disabled={updatingIds.includes(item.id_producto)}
+                              onClick={() => {
+                                const raw = stockInputs[item.id_producto] ?? (item.stock === null ? '' : String(item.stock))
+                                if (raw.trim() === '') {
+                                  setError('Escribe una cantidad')
+                                  return
+                                }
+                                void saveStock(item.id_producto, Number(raw))
+                              }}
+                              className="text-xs bg-[#2563eb] disabled:opacity-50 px-3 py-2 rounded-lg font-bold"
+                            >
+                              Guardar cantidad
+                            </button>
+                            <button type="button" disabled={updatingIds.includes(item.id_producto)} onClick={() => void saveStock(item.id_producto, null)} className="text-xs border border-[#333] disabled:opacity-50 px-3 py-2 rounded-lg">
+                              Sin límite
+                            </button>
+                          </div>
                         </div>
                         <label className="flex flex-col items-center gap-1 text-[11px] text-[#888] shrink-0">
                           <input

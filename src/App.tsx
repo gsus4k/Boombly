@@ -12,8 +12,9 @@ import AdminPanel from './components/AdminPanel'
 import MyOrders from './components/MyOrders'
 import CustomerAuth from './components/CustomerAuth'
 import RestaurantPanel from './components/RestaurantPanel'
+import { crearPedido } from './lib/supabase'
 
-type CartItem = { restaurantId: string; restaurantName: string; name: string; price: number; qty: number }
+type CartItem = { productId?: string; restaurantId: string; restaurantName: string; name: string; price: number; qty: number; stock?: number | null }
 const cartKey = (i: { restaurantId: string; name: string }) => `${i.restaurantId}:${i.name}`
 
 const TAG_COLORS: Record<string, string> = {
@@ -47,6 +48,7 @@ export default function App() {
   const [locError, setLocError] = useState('')
   const [pays, setPays] = useState<Record<string, { ref: string; proof: string | null }>>({})
   const [proofError, setProofError] = useState('')
+  const [orderError, setOrderError] = useState('')
   const alertedUnavailable = useRef(new Set<string>())
   const payOf = (id: string) => pays[id] ?? { ref: '', proof: null }
   const setPay = (id: string, patch: Partial<{ ref: string; proof: string | null }>) =>
@@ -102,11 +104,13 @@ export default function App() {
 
   const addToCart = (rest: Restaurant, item: { name: string; price: number }, openCart = true) => {
     const menuItem = rest.items.find(menuItem => menuItem.name === item.name)
-    if (menuItem?.available === false) return
+    if (menuItem?.available === false || menuItem?.stock === 0) return
     const key = cartKey({ restaurantId: rest.id, name: item.name })
     setCart(prev => {
-      if (prev.some(i => cartKey(i) === key)) return prev.map(i => (cartKey(i) === key ? { ...i, qty: i.qty + 1 } : i))
-      return [...prev, { restaurantId: rest.id, restaurantName: rest.name, name: item.name, price: item.price, qty: 1 }]
+      if (prev.some(i => cartKey(i) === key)) return prev.map(i => (cartKey(i) === key
+        ? { ...i, qty: menuItem?.stock !== null && menuItem?.stock !== undefined ? Math.min(i.qty + 1, menuItem.stock) : i.qty + 1 }
+        : i))
+      return [...prev, { productId: menuItem?.id, restaurantId: rest.id, restaurantName: rest.name, name: item.name, price: item.price, qty: 1, stock: menuItem?.stock }]
     })
     if (openCart) setCartOpen(true)
   }
@@ -115,6 +119,7 @@ export default function App() {
     const unavailable = cart.filter(cartItem => {
       const restaurant = repo.restaurants.find(item => item.id === cartItem.restaurantId)
       return restaurant?.items.find(item => item.name === cartItem.name)?.available === false
+        || restaurant?.items.find(item => item.name === cartItem.name)?.stock === 0
     })
     if (unavailable.length === 0) return
 
@@ -187,11 +192,22 @@ export default function App() {
     if (next === 'orders') setMyOrdersOpen(true)
   }
 
-  const placeOrder = () => {
+  const placeOrder = async () => {
     if (!customer || !location || outOfRange || !quotesReady) return
-    const created = ordersRepo.addMany(
-      cartRestaurantIds.map(id => {
+    setOrderError('')
+    try {
+      const createdInputs = await Promise.all(cartRestaurantIds.map(async id => {
         const lines = cart.filter(i => i.restaurantId === id)
+        await crearPedido({
+          codigo: customer.id,
+          telefono: customer.phone.replace(/\D/g, ''),
+          id_restaurante: id,
+          lat: location.lat,
+          lng: location.lng,
+          precision_m: Math.round(location.accuracy),
+          items: lines.map(line => ({ id_producto: line.productId ?? '', cantidad: line.qty })),
+          referencia: payOf(id).ref.trim(),
+        })
         const sub = lines.reduce((s, i) => s + i.price * i.qty, 0)
         const fee = feeOf(id)
         const distanceKm = quoteOf(id)?.km
@@ -209,8 +225,8 @@ export default function App() {
           location: location ?? undefined,
           payment: { method: 'pago_movil' as const, reference: payOf(id).ref.trim(), proof: payOf(id).proof! },
         }
-      }),
-    )
+      }))
+      const created = ordersRepo.addMany(createdInputs)
     created.forEach(o => void notifyOrderByWhatsApp(o, repo.restaurants.find(r => r.id === o.restaurantId)?.whatsapp))
     setCheckoutOpen(false)
     setLocation(null)
@@ -219,6 +235,21 @@ export default function App() {
     setMyOrdersOpen(true)
     setCartOpen(false)
     setCart([])
+    } catch (orderFailure) {
+      const message = orderFailure instanceof Error ? orderFailure.message : String(orderFailure)
+      console.error('[stock] confirmar pedido', orderFailure)
+      const stockFailure = /Stock insuficiente|no disponible/i.test(message)
+      setOrderError(stockFailure ? message : message)
+      if (stockFailure) {
+        const fresh = await repo.reload()
+        setCart(current => current.flatMap(line => {
+          const freshStock = fresh.find(r => r.id === line.restaurantId)?.items.find(item => item.name === line.name)?.stock
+          const availableItem = fresh.find(r => r.id === line.restaurantId)?.items.find(item => item.name === line.name)
+          if (availableItem?.available === false || freshStock === 0) return []
+          return [{ ...line, qty: freshStock === null || freshStock === undefined ? line.qty : Math.min(line.qty, freshStock), stock: freshStock }]
+        }))
+      }
+    }
   }
 
   return (
@@ -461,7 +492,7 @@ export default function App() {
               {selected.items.map(item => {
                 const qty = cart.find(c => cartKey(c) === cartKey({ restaurantId: selected.id, name: item.name }))?.qty ?? 0
                 return (
-                  <div key={item.name} className={`flex items-center justify-between gap-3 border rounded-xl p-3 ${item.available === false ? 'bg-[#0d0d0d] border-[#242424] opacity-55 grayscale' : 'bg-[#141414] border-[#1e1e1e]'}`}>
+                  <div key={item.name} className={`flex items-center justify-between gap-3 border rounded-xl p-3 ${item.available === false || item.stock === 0 ? 'bg-[#0d0d0d] border-[#242424] opacity-55 grayscale' : 'bg-[#141414] border-[#1e1e1e]'}`}>
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="w-16 h-16 shrink-0 rounded-xl bg-[#1c1c1c] overflow-hidden flex items-center justify-center text-2xl">
                         {item.img ? (
@@ -474,14 +505,17 @@ export default function App() {
                         <p className="font-display font-semibold text-sm truncate">{item.name}</p>
                         {item.description && <p className="text-[11px] text-[#777] line-clamp-2 mt-0.5">{item.description}</p>}
                         <p className="text-[#3b82f6] text-xs font-bold">$ {item.price.toFixed(2)}</p>
-                        {item.available === false && (
+                        {(item.available === false || item.stock === 0) && (
                           <span className="inline-block mt-1 text-[10px] font-bold uppercase tracking-wide text-red-400">Agotado</span>
+                        )}
+                        {item.available !== false && item.stock !== null && item.stock !== undefined && item.stock > 0 && item.stock <= 5 && (
+                          <span className="inline-block mt-1 text-[10px] font-bold text-yellow-400">Quedan {item.stock}</span>
                         )}
                       </div>
                     </div>
                     <button
                       onClick={() => addToCart(selected, item, false)}
-                      disabled={item.available === false}
+                      disabled={item.available === false || item.stock === 0 || (item.stock !== null && item.stock !== undefined && qty >= item.stock)}
                       className="shrink-0 text-xs bg-[#2563eb] hover:bg-[#1d4ed8] disabled:bg-[#333] disabled:text-[#777] disabled:cursor-not-allowed transition-colors px-4 py-2 rounded-lg font-display font-bold"
                     >
                       {qty > 0 ? `Agregar (${qty})` : 'Agregar'}
@@ -625,14 +659,14 @@ export default function App() {
                 )
               })}
             </div>
-            {proofError && <p className="text-red-400 text-xs mt-2">{proofError}</p>}
 
             <div className="flex justify-between font-display font-black text-lg border-t border-[#1e1e1e] mt-6 pt-4">
               <span>Total a pagar</span>
               <span className="text-[#3b82f6]">$ {total.toFixed(2)}</span>
             </div>
+            {orderError && <p className="text-red-400 text-xs mt-3 text-center">{orderError}</p>}
             <button
-              onClick={placeOrder}
+              onClick={() => void placeOrder()}
               disabled={!customer || !location || !quotesReady || outOfRange || cartRestaurantIds.some(id => payOf(id).ref.trim().length < 4 || !payOf(id).proof)}
               className="w-full mt-4 bg-[#2563eb] hover:bg-[#1d4ed8] disabled:bg-[#1c1c1c] disabled:text-[#555] disabled:cursor-not-allowed transition-colors py-4 rounded-xl font-display font-black text-lg"
             >
@@ -676,6 +710,17 @@ export default function App() {
                     <p className="text-[#3b82f6] text-xs font-bold">$ {(item.price * item.qty).toFixed(2)}</p>
                   </div>
                   <div className="flex items-center gap-2">
+                    <button
+                      disabled={item.qty >= 1 && item.stock !== null && item.stock !== undefined && item.qty >= item.stock}
+                      onClick={() => {
+                        setCart(current => current.map(cartItem => cartKey(cartItem) === cartKey(item)
+                          ? { ...cartItem, qty: cartItem.stock !== null && cartItem.stock !== undefined ? Math.min(cartItem.qty + 1, cartItem.stock) : cartItem.qty + 1 }
+                          : cartItem))
+                      }}
+                      className="text-[#aaa] hover:text-white disabled:text-[#444] text-sm"
+                    >
+                      +
+                    </button>
                     <span className="bg-[#1c1c1c] text-[#888] text-xs w-6 h-6 rounded-full flex items-center justify-center font-bold">
                       {item.qty}
                     </span>
