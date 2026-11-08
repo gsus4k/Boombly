@@ -775,6 +775,12 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
   const [menuError, setMenuError] = useState('')
   const [expandedProducts, setExpandedProducts] = useState<string[]>([])
 
+  useEffect(() => {
+    const refreshAccount = () => void auth.refreshRole()
+    window.addEventListener('boombly:cuenta-actualizada', refreshAccount)
+    return () => window.removeEventListener('boombly:cuenta-actualizada', refreshAccount)
+  }, [auth])
+
   const list = repo.restaurants.filter(r => r.name.toLowerCase().includes(query.toLowerCase()))
 
   const saveMenu = async (restaurant: Omit<Restaurant, 'id' | 'createdAt'>) => {

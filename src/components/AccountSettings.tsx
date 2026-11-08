@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
+import { authRedirectOrigin } from '../lib/authRedirectOrigin'
 
 const inputCls =
   'w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-xl px-3 py-3 text-sm outline-none focus:border-[#2563eb] transition-colors placeholder:text-[#555]'
@@ -77,6 +78,17 @@ export default function AccountSettings() {
 
   useEffect(() => {
     void reloadUser()
+    const refreshEmail = () => { void reloadUser() }
+    window.addEventListener('boombly:cuenta-actualizada', refreshEmail)
+    try {
+      const stored = localStorage.getItem('boombly_email_cambio')
+      if (stored && Date.now() - JSON.parse(stored).ts > 24 * 60 * 60 * 1000) {
+        localStorage.removeItem('boombly_email_cambio')
+      }
+    } catch {
+      localStorage.removeItem('boombly_email_cambio')
+    }
+    return () => window.removeEventListener('boombly:cuenta-actualizada', refreshEmail)
   }, [])
 
   useEffect(() => {
@@ -136,7 +148,7 @@ export default function AccountSettings() {
 
       const { error: updateError } = await supabase.auth.updateUser(
         { email: normalizedEmail },
-        { emailRedirectTo: window.location.origin },
+        { emailRedirectTo: authRedirectOrigin() },
       )
       if (updateError) {
         console.error('[cuenta] cambiar correo', updateError)
@@ -146,6 +158,11 @@ export default function AccountSettings() {
 
       setRequestedEmail(normalizedEmail)
       setEmailMessage(`Te enviamos un enlace a ${normalizedEmail}. El correo no cambia hasta que lo confirmes`)
+      localStorage.setItem('boombly_email_cambio', JSON.stringify({
+        desde: user.email,
+        hacia: normalizedEmail,
+        ts: Date.now(),
+      }))
       await reloadUser()
     } finally {
       setEmailPassword('')

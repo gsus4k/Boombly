@@ -1,16 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { supabase } from '../lib/supabase'
+import { authRedirectOrigin } from '../lib/authRedirectOrigin'
 
 const inputCls =
   'w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-xl px-3 py-3 text-sm outline-none focus:border-[#2563eb] transition-colors placeholder:text-[#555]'
-
-function recoveryRedirectOrigin() {
-  const origin = new URL(window.location.origin)
-  if (origin.hostname === 'localhost' || origin.hostname === '[::1]') {
-    origin.hostname = '127.0.0.1'
-  }
-  return origin.origin
-}
 
 type ForgotPasswordProps = {
   panel: 'restaurant' | 'admin'
@@ -47,7 +40,7 @@ export default function ForgotPassword({ panel }: ForgotPasswordProps) {
     setMessage('')
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: recoveryRedirectOrigin(),
+        redirectTo: authRedirectOrigin(),
       })
       if (error) {
         const code = error.code ?? ''

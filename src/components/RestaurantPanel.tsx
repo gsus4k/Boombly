@@ -107,6 +107,12 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener('boombly:auth-changed', refresh)
   }, [])
 
+  useEffect(() => {
+    const refreshAccount = () => void initializeSession()
+    window.addEventListener('boombly:cuenta-actualizada', refreshAccount)
+    return () => window.removeEventListener('boombly:cuenta-actualizada', refreshAccount)
+  }, [])
+
   const initializeSession = async () => {
     setRoleChecked(false)
     const { data: userData, error: userError } = await supabase.auth.getUser()

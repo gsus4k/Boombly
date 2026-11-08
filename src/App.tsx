@@ -13,6 +13,7 @@ import MyOrders from './components/MyOrders'
 import CustomerAuth from './components/CustomerAuth'
 import RestaurantPanel from './components/RestaurantPanel'
 import PasswordRecoveryModal from './components/PasswordRecoveryModal'
+import EmailChangeModal from './components/EmailChangeModal'
 import { crearPedido, supabase } from './lib/supabase'
 
 type CartItem = { productId?: string; restaurantId: string; restaurantName: string; name: string; price: number; qty: number; stock?: number | null }
@@ -301,6 +302,7 @@ export default function App() {
           }}
         />
       )}
+      <EmailChangeModal suppressError={expiredLink} />
 
       {/* NAV */}
       <nav className="sticky top-0 z-50 bg-[#0a0a0a]/90 backdrop-blur-md border-b border-[#1e1e1e] px-3 sm:px-4 md:px-8 h-16 flex items-center justify-between gap-2">
