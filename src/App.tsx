@@ -12,7 +12,8 @@ import AdminPanel from './components/AdminPanel'
 import MyOrders from './components/MyOrders'
 import CustomerAuth from './components/CustomerAuth'
 import RestaurantPanel from './components/RestaurantPanel'
-import { crearPedido } from './lib/supabase'
+import PasswordRecoveryModal from './components/PasswordRecoveryModal'
+import { crearPedido, supabase } from './lib/supabase'
 
 type CartItem = { productId?: string; restaurantId: string; restaurantName: string; name: string; price: number; qty: number; stock?: number | null }
 const cartKey = (i: { restaurantId: string; name: string }) => `${i.restaurantId}:${i.name}`
@@ -49,10 +50,39 @@ export default function App() {
   const [pays, setPays] = useState<Record<string, { ref: string; proof: string | null }>>({})
   const [proofError, setProofError] = useState('')
   const [orderError, setOrderError] = useState('')
+  const [recoveryEmail, setRecoveryEmail] = useState<string | null>(null)
+  const [expiredLink, setExpiredLink] = useState(false)
+  const recoveryEmailRef = useRef('')
   const alertedUnavailable = useRef(new Set<string>())
   const payOf = (id: string) => pays[id] ?? { ref: '', proof: null }
   const setPay = (id: string, patch: Partial<{ ref: string; proof: string | null }>) =>
     setPays(prev => ({ ...prev, [id]: { ...(prev[id] ?? { ref: '', proof: null }), ...patch } }))
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+    const query = new URLSearchParams(window.location.search)
+    const hasExpiredParams = params.has('error_description') || params.has('error_code')
+      || query.has('error_description') || query.has('error_code')
+    if (hasExpiredParams) {
+      setExpiredLink(true)
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event !== 'PASSWORD_RECOVERY') return
+      recoveryEmailRef.current = session?.user.email ?? ''
+      window.setTimeout(() => {
+        setRecoveryEmail(recoveryEmailRef.current)
+      }, 0)
+    })
+    return () => data.subscription.unsubscribe()
+  }, [])
+
+  const requestNewPasswordLink = () => {
+    setExpiredLink(false)
+    setRestaurantPanelOpen(true)
+    window.setTimeout(() => window.dispatchEvent(new CustomEvent('boombly:forgot-password', { detail: 'restaurant' })), 0)
+  }
 
   const onProofChange = async (id: string, file?: File) => {
     if (!file) return
@@ -254,6 +284,23 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#f5f5f5] overflow-x-hidden">
+      {expiredLink && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[110] w-[calc(100%-2rem)] max-w-lg bg-[#111] border border-[#2a2a2a] rounded-2xl p-4 shadow-xl">
+          <p className="text-sm text-[#ddd]">El enlace venció o ya se usó: pide uno nuevo</p>
+          <button type="button" onClick={requestNewPasswordLink} className="mt-3 text-sm text-[#4d8cff] hover:text-[#82abff] font-bold">
+            Solicitar nuevo enlace
+          </button>
+        </div>
+      )}
+      {recoveryEmail !== null && (
+        <PasswordRecoveryModal
+          email={recoveryEmail}
+          onClose={() => {
+            setRecoveryEmail(null)
+            recoveryEmailRef.current = ''
+          }}
+        />
+      )}
 
       {/* NAV */}
       <nav className="sticky top-0 z-50 bg-[#0a0a0a]/90 backdrop-blur-md border-b border-[#1e1e1e] px-3 sm:px-4 md:px-8 h-16 flex items-center justify-between gap-2">

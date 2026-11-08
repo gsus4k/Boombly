@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import { CATEGORIES, TAGS } from '../data/seed'
 import type { Restaurant } from '../data/types'
 import type { useAdminAuth } from '../data/auth'
+import ForgotPassword from './ForgotPassword'
 import type { useRestaurants } from '../data/repository'
 import type { useOrders } from '../data/orders'
 import type { Customer } from '../data/customer'
 import Reports from './Reports'
 import Customers from './Customers'
+import AccountSettings from './AccountSettings'
 import { supabase } from '../lib/supabase'
 import {
   cambiarEstadoRestaurante,
@@ -102,6 +104,7 @@ function Login({ auth, onClose }: { auth: Auth; onClose: () => void }) {
   const [email, setEmail] = useState('')
   const [pass, setPass] = useState('')
   const [error, setError] = useState('')
+  const loginLock = useRef(false)
 
   return (
     <div className="w-full max-w-sm bg-[#111] border border-[#1e1e1e] rounded-2xl p-6 slide-up" onClick={e => e.stopPropagation()}>
@@ -115,11 +118,16 @@ function Login({ auth, onClose }: { auth: Auth; onClose: () => void }) {
       <form
         onSubmit={async e => {
           e.preventDefault()
+          if (loginLock.current) return
+          loginLock.current = true
           setError('')
           try {
             await auth.login(email, pass)
           } catch (err) {
             setError(err instanceof Error ? err.message : 'Usuario o clave incorrectos.')
+          } finally {
+            setPass('')
+            loginLock.current = false
           }
         }}
         className="space-y-4"
@@ -137,6 +145,7 @@ function Login({ auth, onClose }: { auth: Auth; onClose: () => void }) {
           Entrar
         </button>
       </form>
+      <div className="text-center"><ForgotPassword panel="admin" /></div>
     </div>
   )
 }
@@ -759,7 +768,7 @@ function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
 }
 
 function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth; repo: Repo; ordersRepo: OrdersRepo; customers: Customer[]; onClose: () => void }) {
-  const [tab, setTab] = useState<'restaurantes' | 'clientes' | 'reportes' | 'categorias' | 'repartidores'>('restaurantes')
+  const [tab, setTab] = useState<'restaurantes' | 'clientes' | 'reportes' | 'categorias' | 'repartidores' | 'cuenta'>('restaurantes')
   const [editing, setEditing] = useState<Restaurant | 'new' | null>(null)
   const [query, setQuery] = useState('')
   const [savingMenu, setSavingMenu] = useState(false)
@@ -803,7 +812,7 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
       <div className="sticky top-0 z-10 bg-[#111]/95 backdrop-blur border-b border-[#1e1e1e] p-5 flex items-center justify-between gap-3">
         <div>
           <h2 className="font-display font-black text-xl">Panel de administración</h2>
-          <p className="text-xs text-[#666]">{repo.restaurants.length} restaurantes · sesión de {auth.currentUser}</p>
+          <p className="text-xs text-[#666]">{repo.restaurants.length} restaurantes · Sesión de {auth.currentUser} · admin</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={auth.logout} className="text-xs text-[#888] hover:text-white px-3 py-2 rounded-lg border border-[#2a2a2a]">
@@ -814,18 +823,20 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
       </div>
 
       <div className="px-5 pt-4 flex gap-2">
-        {(['restaurantes', 'clientes', 'reportes', 'categorias', 'repartidores'] as const).map(t => (
+        {(['restaurantes', 'clientes', 'reportes', 'categorias', 'repartidores', 'cuenta'] as const).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`px-4 py-2 rounded-lg text-sm font-display font-semibold capitalize transition-colors ${tab === t ? 'bg-[#2563eb] text-white' : 'bg-[#141414] text-[#888] hover:text-white border border-[#2a2a2a]'}`}
           >
-            {t === 'reportes' ? `Reportes (${ordersRepo.orders.length})` : t === 'clientes' ? `Clientes (${customers.length})` : t === 'categorias' ? 'Categorías' : t === 'repartidores' ? 'Repartidores' : 'Restaurantes'}
+            {t === 'reportes' ? `Reportes (${ordersRepo.orders.length})` : t === 'clientes' ? `Clientes (${customers.length})` : t === 'categorias' ? 'Categorías' : t === 'repartidores' ? 'Repartidores' : t === 'cuenta' ? 'Mi cuenta' : 'Restaurantes'}
           </button>
         ))}
       </div>
 
-      {tab === 'categorias' ? (
+      {tab === 'cuenta' ? (
+        <div className="p-5"><AccountSettings /></div>
+      ) : tab === 'categorias' ? (
         <div className="p-5"><CategoriesManager /></div>
       ) : tab === 'repartidores' ? (
         <div className="p-5"><DriversManager /></div>
@@ -928,9 +939,22 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
 }
 
 export default function AdminPanel({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth; repo: Repo; ordersRepo: OrdersRepo; customers: Customer[]; onClose: () => void }) {
+  const mismatch = auth.loggedIn && auth.roleChecked && auth.role !== 'admin'
+  const loadingRole = auth.loggedIn && !auth.roleChecked
   return (
     <div className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      {auth.loggedIn ? <Dashboard auth={auth} repo={repo} ordersRepo={ordersRepo} customers={customers} onClose={onClose} /> : <Login auth={auth} onClose={onClose} />}
+      {mismatch ? (
+        <div className="w-full max-w-sm rounded-2xl border border-[#1e1e1e] bg-[#111] p-6 text-center">
+          <p className="text-red-400 mb-5">Esta cuenta no tiene acceso a este panel</p>
+          <button onClick={() => void auth.logout()} className="w-full rounded-xl bg-[#2563eb] py-3 font-bold">Cerrar sesión</button>
+        </div>
+      ) : loadingRole ? (
+        <p className="text-sm text-[#888]">Verificando acceso…</p>
+      ) : auth.loggedIn ? (
+        <Dashboard auth={auth} repo={repo} ordersRepo={ordersRepo} customers={customers} onClose={onClose} />
+      ) : (
+        <Login auth={auth} onClose={onClose} />
+      )}
     </div>
   )
 }

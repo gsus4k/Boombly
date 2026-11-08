@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { ajustarStock, listarProductos, marcarDisponibilidad } from '../lib/productos'
+import AccountSettings from './AccountSettings'
+import ForgotPassword from './ForgotPassword'
 
 const inputCls =
   'w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-xl px-3 py-3 text-sm outline-none focus:border-[#2563eb] transition-colors placeholder:text-[#555]'
@@ -37,7 +39,11 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   const [updatingIds, setUpdatingIds] = useState<string[]>([])
   const [stockInputs, setStockInputs] = useState<Record<string, string>>({})
   const stockLock = useRef(false)
+  const loginLock = useRef(false)
   const [sessionEmail, setSessionEmail] = useState('')
+  const [role, setRole] = useState<string | null>(null)
+  const [roleChecked, setRoleChecked] = useState(false)
+  const [restaurantView, setRestaurantView] = useState<'gestion' | 'cuenta'>('gestion')
 
   const loadProducts = async (idRestaurante: string) => {
     setLoadingProducts(true)
@@ -78,26 +84,71 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) {
         setLoggedIn(true)
-        setSessionEmail(data.session.user.email ?? '')
-        void loadRestaurants()
+        void initializeSession()
+      } else {
+        setRoleChecked(true)
       }
     })
   }, [])
 
+  useEffect(() => {
+    const refresh = () => {
+      void supabase.auth.getSession().then(({ data }) => {
+        if (!data.session) {
+          setLoggedIn(false)
+          setRole(null)
+          setRoleChecked(true)
+          return
+        }
+        void initializeSession()
+      })
+    }
+    window.addEventListener('boombly:auth-changed', refresh)
+    return () => window.removeEventListener('boombly:auth-changed', refresh)
+  }, [])
+
+  const initializeSession = async () => {
+    setRoleChecked(false)
+    const { data: userData, error: userError } = await supabase.auth.getUser()
+    let roleData: unknown = null
+    let roleError = null as { message: string } | null
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await supabase.rpc('mi_rol')
+      roleError = result.error
+      if (!result.error && typeof result.data === 'string') {
+        roleData = result.data
+        break
+      }
+      await new Promise(resolve => window.setTimeout(resolve, 150))
+    }
+    if (userError) console.error('[restaurant] cargar usuario', userError)
+    if (roleError) console.error('[restaurant] consultar rol', roleError)
+    setSessionEmail(userData.user?.email ?? '')
+    setRole(typeof roleData === 'string' ? roleData : null)
+    setRoleChecked(true)
+    if (!roleError && roleData === 'restaurante') void loadRestaurants()
+  }
+
   const signIn = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (loginLock.current) return
+    loginLock.current = true
     setAuthLoading(true)
     setError('')
-    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
-    setAuthLoading(false)
-    if (signInError) {
-      setError(signInError.message)
-      return
+    try {
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+      if (signInError) {
+        console.error('[restaurant] iniciar sesión', signInError)
+        setError(signInError.message)
+        return
+      }
+      setLoggedIn(true)
+      await initializeSession()
+    } finally {
+      setPassword('')
+      setAuthLoading(false)
+      loginLock.current = false
     }
-    const { data: sessionData } = await supabase.auth.getSession()
-    setLoggedIn(true)
-    setSessionEmail(sessionData.session?.user.email ?? email)
-    await loadRestaurants()
   }
 
   const signOut = async () => {
@@ -112,6 +163,8 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     setRestaurantId('')
     setProducts([])
     setSessionEmail('')
+    setRole(null)
+    setRoleChecked(true)
   }
 
   const changeRestaurant = (id: string) => {
@@ -222,7 +275,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
           <div>
             <p className="text-[#3b82f6] text-xs uppercase tracking-widest font-bold">Restaurante</p>
             <h2 className="font-display font-black text-xl sm:text-2xl">Panel del restaurante</h2>
-            {loggedIn && sessionEmail && <p className="text-xs text-[#888] mt-1">{sessionEmail}</p>}
+            {loggedIn && sessionEmail && <p className="text-xs text-[#888] mt-1">Sesión de {sessionEmail} · restaurante</p>}
           </div>
           <button type="button" onClick={onClose} aria-label="Cerrar" className="text-[#777] hover:text-white text-xl">✕</button>
         </div>
@@ -233,6 +286,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
             <input
               className={`${inputCls} mb-4`}
               type="email"
+              autoComplete="username"
               value={email}
               onChange={event => setEmail(event.target.value)}
               placeholder="correo@restaurante.com"
@@ -242,6 +296,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
             <input
               className={inputCls}
               type="password"
+              autoComplete="current-password"
               value={password}
               onChange={event => setPassword(event.target.value)}
               placeholder="••••••••"
@@ -251,7 +306,15 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
             <button disabled={authLoading} type="submit" className="w-full mt-5 bg-[#2563eb] hover:bg-[#1d4ed8] disabled:opacity-60 py-3.5 rounded-xl font-display font-black">
               {authLoading ? 'Cargando…' : 'Iniciar sesión'}
             </button>
+            <div className="text-center"><ForgotPassword panel="restaurant" /></div>
           </form>
+        ) : loggedIn && roleChecked && role !== 'restaurante' ? (
+          <div className="max-w-sm mx-auto py-8 text-center">
+            <p className="mb-5 text-red-400">Esta cuenta no tiene acceso a este panel</p>
+            <button onClick={() => void signOut()} className="w-full rounded-xl bg-[#2563eb] py-3 font-bold">Cerrar sesión</button>
+          </div>
+        ) : loggedIn && !roleChecked ? (
+          <p className="py-8 text-center text-sm text-[#888]">Verificando acceso…</p>
         ) : (
           <>
             <div className="flex items-center justify-end mb-4">
@@ -265,11 +328,22 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
                   Actualizar
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => setRestaurantView(view => view === 'cuenta' ? 'gestion' : 'cuenta')}
+                className={`text-xs border border-[#2a2a2a] rounded-xl px-3 py-2 mr-2 ${restaurantView === 'cuenta' ? 'bg-[#2563eb] text-white' : 'text-[#888] hover:text-white'}`}
+              >
+                {restaurantView === 'cuenta' ? 'Gestión' : 'Mi cuenta'}
+              </button>
               <button onClick={() => void signOut()} className="text-xs text-[#888] hover:text-white border border-[#2a2a2a] rounded-xl px-3 py-2">
                 Cerrar sesión
               </button>
             </div>
 
+            {restaurantView === 'cuenta' ? (
+              <AccountSettings />
+            ) : (
+            <>
             {(loadingRestaurants || loadingProducts) && <p className="text-sm text-[#888] text-center py-5">Cargando…</p>}
             {error && <p className="text-red-400 text-xs mb-4">{error}</p>}
 
@@ -389,6 +463,8 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
                   })}
                 </div>
               </>
+            )}
+            </>
             )}
           </>
         )}
