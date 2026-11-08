@@ -9,6 +9,7 @@ import type { Customer } from '../data/customer'
 import Reports from './Reports'
 import Customers from './Customers'
 import AccountSettings from './AccountSettings'
+import CuentasRestaurantes from './CuentasRestaurantes'
 import { supabase } from '../lib/supabase'
 import {
   cambiarEstadoRestaurante,
@@ -794,6 +795,7 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
         setSavingMenu(false)
         return
       }
+
     } catch (error) {
       console.error('[guardar producto] paso 1: sesión', error)
       setMenuError(`Paso 1 (sesión): ${error instanceof Error ? error.message : String(error)}`)
@@ -802,7 +804,9 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
     }
 
     try {
-      if (editing === 'new') await repo.add(restaurant)
+      if (editing === 'new') {
+        await repo.add(restaurant)
+      }
       else if (editing) await repo.update(editing.id, restaurant)
       setEditing(null)
     } catch (error) {
@@ -881,6 +885,7 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
               </button>
             </div>
 
+            <CuentasRestaurantes />
             <div className="space-y-2">
               {list.length === 0 && <p className="text-center text-[#555] py-10 text-sm">No hay restaurantes.</p>}
               {list.map(r => (

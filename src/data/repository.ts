@@ -86,7 +86,7 @@ export function useRestaurants() {
     if (!userId) throw new Error('Inicia sesión como administrador')
     const { data: category } = await supabase.from('categoria').select('id_categoria').ilike('nombre', data.category).limit(1).maybeSingle()
     const phone = data.whatsapp?.replace(/\D/g, '') || `0412${String(Date.now()).slice(-7)}`
-    const { error } = await supabase.from('restaurante').insert({
+    const { data: inserted, error } = await supabase.from('restaurante').insert({
       id_admin: userId,
       id_categoria: category?.id_categoria ?? 1,
       nombre: data.name,
@@ -101,9 +101,10 @@ export function useRestaurants() {
       pm_banco: data.pagoMovil?.banco || null,
       pm_telefono: data.pagoMovil?.telefono || null,
       pm_cedula_rif: data.pagoMovil?.cedula || null,
-    })
+    }).select('id_restaurante').single()
     if (error) throw error
     await syncAvailability()
+    return String(inserted.id_restaurante)
   }, [syncAvailability])
 
   const update = useCallback(async (id: string, data: Partial<Restaurant>) => {

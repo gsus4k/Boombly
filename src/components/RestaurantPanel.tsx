@@ -7,7 +7,7 @@ import ForgotPassword from './ForgotPassword'
 const inputCls =
   'w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-xl px-3 py-3 text-sm outline-none focus:border-[#2563eb] transition-colors placeholder:text-[#555]'
 
-type RestaurantRelation = { nombre?: string | null } | Array<{ nombre?: string | null }> | null
+type RestaurantRelation = { nombre?: string | null; activo?: boolean | null } | Array<{ nombre?: string | null; activo?: boolean | null }> | null
 type AssignedRestaurant = {
   id_restaurante: string
   restaurante: RestaurantRelation
@@ -24,6 +24,8 @@ type Product = {
 
 const relatedName = (relation: RestaurantRelation | undefined) =>
   (Array.isArray(relation) ? relation[0]?.nombre : relation?.nombre) ?? 'Restaurante'
+const relatedActive = (relation: RestaurantRelation | undefined) =>
+  Array.isArray(relation) ? relation[0]?.activo : relation?.activo
 
 export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   const [email, setEmail] = useState('')
@@ -66,7 +68,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     setError('')
     const { data, error: queryError } = await supabase
       .from('restaurante_gestor')
-      .select('id_restaurante, restaurante(nombre)')
+      .select('id_restaurante, restaurante(nombre, activo)')
 
     setLoadingRestaurants(false)
     if (queryError) {
@@ -76,8 +78,15 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
 
     const assigned = (data ?? []) as AssignedRestaurant[]
     setRestaurants(assigned)
-    setRestaurantId('')
+    const first = assigned[0]
+    if (!first) {
+      setRestaurantId('')
+      setProducts([])
+      return
+    }
+    setRestaurantId(String(first.id_restaurante))
     setProducts([])
+    if (relatedActive(first.restaurante) !== false) void loadProducts(String(first.id_restaurante))
   }
 
   useEffect(() => {
@@ -173,12 +182,6 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     setRoleChecked(true)
   }
 
-  const changeRestaurant = (id: string) => {
-    setRestaurantId(id)
-    setProducts([])
-    void loadProducts(id)
-  }
-
   useEffect(() => {
     const channel = supabase
       .channel('productos-imagenes')
@@ -262,7 +265,6 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
         throw new Error('La cantidad debe ser un entero entre 0 y 100000.')
       }
       const numero = stock
-      console.log('[stock] guardando', { idRestaurante: restaurantId, idProducto: productId, numero })
       await ajustarStock(restaurantId, productId, stock)
       await loadProducts(restaurantId)
     } catch (stockError) {
@@ -282,6 +284,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
             <p className="text-[#3b82f6] text-xs uppercase tracking-widest font-bold">Restaurante</p>
             <h2 className="font-display font-black text-xl sm:text-2xl">Panel del restaurante</h2>
             {loggedIn && sessionEmail && <p className="text-xs text-[#888] mt-1">Sesión de {sessionEmail} · restaurante</p>}
+            {restaurants[0] && <p className="text-sm font-bold text-white mt-1">{relatedName(restaurants[0].restaurante)} · {sessionEmail}</p>}
           </div>
           <button type="button" onClick={onClose} aria-label="Cerrar" className="text-[#777] hover:text-white text-xl">✕</button>
         </div>
@@ -357,30 +360,12 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
               <p className="text-[#aaa] text-sm text-center py-10">Tu usuario no tiene un restaurante asignado</p>
             )}
 
-            {restaurants.length > 0 && (
-              <>
-                {!restaurantId && (
-                  <>
-                    <p className="text-xs font-display font-semibold text-[#888] uppercase tracking-wider mb-3">
-                      Restaurantes agregados
-                    </p>
-                    <div className="grid sm:grid-cols-2 gap-3">
-                      {restaurants.map(item => (
-                        <button
-                          key={item.id_restaurante}
-                          type="button"
-                          onClick={() => changeRestaurant(item.id_restaurante)}
-                          className="text-left bg-[#141414] border border-[#1e1e1e] hover:border-[#2563eb] transition-colors rounded-2xl p-4"
-                        >
-                          <span className="text-2xl block mb-2">🍽️</span>
-                          <span className="font-display font-bold">{relatedName(item.restaurante)}</span>
-                          <span className="block text-xs text-[#777] mt-1">Ver productos →</span>
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
+            {!loadingRestaurants && restaurants.length > 0 && (relatedActive(restaurants[0].restaurante) === false || !restaurants[0].restaurante) && (
+              <p className="text-[#aaa] text-sm text-center py-10">Tu restaurante está desactivado. Contacta al administrador</p>
+            )}
 
+            {restaurants.length > 0 && !!restaurants[0].restaurante && relatedActive(restaurants[0].restaurante) !== false && (
+              <>
                 {restaurantId && (
                   <div className="flex items-center justify-between gap-3 mb-4">
                     <div>
@@ -389,16 +374,6 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
                         {relatedName(restaurants.find(item => item.id_restaurante === restaurantId)?.restaurante)}
                       </h3>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRestaurantId('')
-                        setProducts([])
-                      }}
-                      className="text-xs text-[#888] hover:text-white border border-[#2a2a2a] rounded-xl px-3 py-2"
-                    >
-                      ← Restaurantes
-                    </button>
                   </div>
                 )}
 
