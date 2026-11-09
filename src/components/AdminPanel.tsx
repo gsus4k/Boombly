@@ -822,7 +822,7 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
       <div className="sticky top-0 z-10 bg-[#111]/95 backdrop-blur border-b border-[#1e1e1e] p-5 flex items-center justify-between gap-3">
         <div>
           <h2 className="font-display font-black text-xl">Panel de administración</h2>
-          <p className="text-xs text-[#666]">{repo.restaurants.length} restaurantes · Sesión de {auth.currentUser} · admin</p>
+          <p className="text-xs text-[#666]">{repo.restaurants.length} restaurantes · Sesión de {auth.currentUser} · {auth.role ?? 'sin rol'}</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={auth.logout} className="text-xs text-[#888] hover:text-white px-3 py-2 rounded-lg border border-[#2a2a2a]">
@@ -956,15 +956,22 @@ export default function AdminPanel({ auth, repo, ordersRepo, customers, onClose 
     <div className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       {mismatch ? (
         <div className="w-full max-w-sm rounded-2xl border border-[#1e1e1e] bg-[#111] p-6 text-center">
-          <p className="text-red-400 mb-5">Esta cuenta no tiene acceso a este panel</p>
-          <button onClick={() => void auth.logout()} className="w-full rounded-xl bg-[#2563eb] py-3 font-bold">Cerrar sesión</button>
+          <p className="mb-5 text-red-400">Hay una sesión de {auth.currentUser} ({auth.role ?? 'sin rol'}) abierta en este navegador. Este panel es para cuentas de admin.</p>
+          <button onClick={() => void auth.logout()} className="w-full rounded-xl bg-[#2563eb] py-3 font-bold">Cerrar sesión y entrar con otra cuenta</button>
+          <button onClick={onClose} className="mt-3 w-full rounded-xl border border-[#2a2a2a] py-3 font-bold text-[#aaa]">Cancelar</button>
         </div>
       ) : loadingRole ? (
         <p className="text-sm text-[#888]">Verificando acceso…</p>
       ) : auth.loggedIn ? (
-        <Dashboard auth={auth} repo={repo} ordersRepo={ordersRepo} customers={customers} onClose={onClose} />
+        <>
+          {auth.sessionNotice && <div className="fixed top-4 left-1/2 z-[80] -translate-x-1/2 rounded-xl bg-[#2563eb] px-4 py-3 text-sm text-white shadow-xl">{auth.sessionNotice}</div>}
+          <Dashboard auth={auth} repo={repo} ordersRepo={ordersRepo} customers={customers} onClose={onClose} />
+        </>
       ) : (
-        <Login auth={auth} onClose={onClose} />
+        <>
+          {auth.expired && <p className="absolute top-8 rounded-xl bg-[#111] px-4 py-3 text-sm text-red-400">Tu sesión venció: vuelve a entrar</p>}
+          <Login auth={auth} onClose={onClose} />
+        </>
       )}
     </div>
   )

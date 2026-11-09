@@ -46,6 +46,16 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   const [role, setRole] = useState<string | null>(null)
   const [roleChecked, setRoleChecked] = useState(false)
   const [restaurantView, setRestaurantView] = useState<'gestion' | 'cuenta'>('gestion')
+  const [sessionNotice, setSessionNotice] = useState('')
+  const [expired, setExpired] = useState(false)
+  const previousSession = useRef<{ email: string; role: string | null } | null>(null)
+
+  const isExpiredSessionError = (value: unknown) => {
+    const message = value instanceof Error ? value.message : typeof value === 'object' && value && 'message' in value
+      ? String((value as { message: unknown }).message)
+      : typeof value === 'string' ? value : ''
+    return /permission denied|auth session missing/i.test(message)
+  }
 
   const loadProducts = async (idRestaurante: string) => {
     setLoadingProducts(true)
@@ -56,6 +66,11 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     } catch (queryError) {
       setLoadingProducts(false)
       console.error('[restaurant] cargar productos', queryError)
+      if (isExpiredSessionError(queryError)) {
+        setExpired(true)
+        setLoggedIn(false)
+        setProducts([])
+      }
       setError(queryError instanceof Error ? queryError.message : String(queryError))
       return
     }
@@ -72,6 +87,11 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
 
     setLoadingRestaurants(false)
     if (queryError) {
+      if (isExpiredSessionError(queryError.message)) {
+        setExpired(true)
+        setLoggedIn(false)
+        setRestaurants([])
+      }
       setError(queryError.message)
       return
     }
@@ -90,30 +110,20 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) {
-        setLoggedIn(true)
-        void initializeSession()
-      } else {
-        setRoleChecked(true)
+    window.addEventListener('boombly:auth-changed', refresh)
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (['SIGNED_IN', 'SIGNED_OUT', 'USER_UPDATED', 'TOKEN_REFRESHED'].includes(event)) {
+        window.setTimeout(() => { void initializeSession() }, 0)
       }
     })
-  }, [])
-
-  useEffect(() => {
-    const refresh = () => {
-      void supabase.auth.getSession().then(({ data }) => {
-        if (!data.session) {
-          setLoggedIn(false)
-          setRole(null)
-          setRoleChecked(true)
-          return
-        }
-        void initializeSession()
-      })
+    void initializeSession()
+    function refresh() {
+      void initializeSession()
     }
-    window.addEventListener('boombly:auth-changed', refresh)
-    return () => window.removeEventListener('boombly:auth-changed', refresh)
+    return () => {
+      window.removeEventListener('boombly:auth-changed', refresh)
+      data.subscription.unsubscribe()
+    }
   }, [])
 
   useEffect(() => {
@@ -125,6 +135,17 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   const initializeSession = async () => {
     setRoleChecked(false)
     const { data: userData, error: userError } = await supabase.auth.getUser()
+    if (userError || !userData.user) {
+      if (userError && isExpiredSessionError(userError.message)) setExpired(true)
+      setLoggedIn(false)
+      setSessionEmail('')
+      setRole(null)
+      setRoleChecked(true)
+      setRestaurants([])
+      setProducts([])
+      previousSession.current = null
+      return
+    }
     let roleData: unknown = null
     let roleError = null as { message: string } | null
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -138,8 +159,21 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     }
     if (userError) console.error('[restaurant] cargar usuario', userError)
     if (roleError) console.error('[restaurant] consultar rol', roleError)
-    setSessionEmail(userData.user?.email ?? '')
-    setRole(typeof roleData === 'string' ? roleData : null)
+    if (roleError && isExpiredSessionError(roleError.message)) {
+      setExpired(true)
+      setLoggedIn(false)
+    }
+    const nextEmail = userData.user.email ?? ''
+    const nextRole = typeof roleData === 'string' ? roleData : null
+    const previous = previousSession.current
+    if (previous && (previous.email !== nextEmail || previous.role !== nextRole)) {
+      setSessionNotice(`La sesión cambió en otra ventana: ahora eres ${nextEmail} (${nextRole ?? 'sin rol'})`)
+    }
+    previousSession.current = { email: nextEmail, role: nextRole }
+    setSessionEmail(nextEmail)
+    setRole(nextRole)
+    setLoggedIn(true)
+    setExpired(false)
     setRoleChecked(true)
     if (!roleError && roleData === 'restaurante') void loadRestaurants()
   }
@@ -168,7 +202,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
 
   const signOut = async () => {
     setError('')
-    const { error: signOutError } = await supabase.auth.signOut()
+    const { error: signOutError } = await supabase.auth.signOut({ scope: 'local' })
     if (signOutError) {
       setError(signOutError.message)
       return
@@ -180,6 +214,9 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     setSessionEmail('')
     setRole(null)
     setRoleChecked(true)
+    setSessionNotice('')
+    setExpired(false)
+    previousSession.current = null
   }
 
   useEffect(() => {
@@ -283,7 +320,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
           <div>
             <p className="text-[#3b82f6] text-xs uppercase tracking-widest font-bold">Restaurante</p>
             <h2 className="font-display font-black text-xl sm:text-2xl">Panel del restaurante</h2>
-            {loggedIn && sessionEmail && <p className="text-xs text-[#888] mt-1">Sesión de {sessionEmail} · restaurante</p>}
+            {loggedIn && sessionEmail && <p className="text-xs text-[#888] mt-1">Sesión de {sessionEmail} · {role ?? 'sin rol'}</p>}
             {restaurants[0] && <p className="text-sm font-bold text-white mt-1">{relatedName(restaurants[0].restaurante)} · {sessionEmail}</p>}
           </div>
           <button type="button" onClick={onClose} aria-label="Cerrar" className="text-[#777] hover:text-white text-xl">✕</button>
@@ -291,6 +328,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
 
         {!loggedIn ? (
           <form onSubmit={signIn} className="max-w-md mx-auto py-4">
+            {expired && <p className="mb-4 text-sm text-red-400">Tu sesión venció: vuelve a entrar</p>}
             <label className="block text-xs font-display font-semibold text-[#888] uppercase tracking-wider mb-1.5">Correo</label>
             <input
               className={`${inputCls} mb-4`}
@@ -319,13 +357,15 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
           </form>
         ) : loggedIn && roleChecked && role !== 'restaurante' ? (
           <div className="max-w-sm mx-auto py-8 text-center">
-            <p className="mb-5 text-red-400">Esta cuenta no tiene acceso a este panel</p>
-            <button onClick={() => void signOut()} className="w-full rounded-xl bg-[#2563eb] py-3 font-bold">Cerrar sesión</button>
+            <p className="mb-5 text-red-400">Hay una sesión de {sessionEmail} ({role ?? 'sin rol'}) abierta en este navegador. Este panel es para cuentas de restaurante.</p>
+            <button onClick={() => void signOut()} className="w-full rounded-xl bg-[#2563eb] py-3 font-bold">Cerrar sesión y entrar con otra cuenta</button>
+            <button onClick={onClose} className="mt-3 w-full rounded-xl border border-[#2a2a2a] py-3 font-bold text-[#aaa]">Cancelar</button>
           </div>
         ) : loggedIn && !roleChecked ? (
           <p className="py-8 text-center text-sm text-[#888]">Verificando acceso…</p>
         ) : (
           <>
+            {sessionNotice && <p className="mb-4 rounded-xl bg-[#2563eb] px-4 py-3 text-sm text-white">{sessionNotice}</p>}
             <div className="flex items-center justify-end mb-4">
               {restaurantId && (
                 <button
