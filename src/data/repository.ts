@@ -3,20 +3,34 @@ import type { Restaurant } from './types'
 import { supabase } from '../lib/supabase'
 import { eliminarRestaurante } from '../lib/productos'
 
-const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1414235077428-338989a2e8c0?w=600&h=400&fit=crop&auto=format'
+export function getRestaurantImageUrl(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) return ''
+
+  try {
+    const url = new URL(value)
+    if (!['http:', 'https:'].includes(url.protocol)) return ''
+    const marker = '/storage/v1/object/public/restaurantes/'
+    return url.pathname.includes(marker) && url.pathname.split(marker)[1] ? value : ''
+  } catch {
+    return ''
+  }
+}
 
 export function useRestaurants() {
   const [restaurants, setRestaurants] = useState<Restaurant[]>([])
+  const [loadError, setLoadError] = useState('')
 
   const syncAvailability = useCallback(async () => {
     const { data, error } = await supabase
       .from('restaurante')
       .select('*, detalle_producto(id_producto, precio, disponible, stock, producto(*))')
     if (error) {
-      console.error('[restaurants] cargar', error)
-      return []
+      console.error('[foto] cargar lista de restaurantes', error)
+      setLoadError(error.message)
+      throw error
     }
 
+    setLoadError('')
     const mapped = (data ?? []).map((row, index) => ({
       id: String(row.id_restaurante),
       name: String(row.nombre ?? '').trim(),
@@ -25,7 +39,7 @@ export function useRestaurants() {
       time: String(row.tiempo_estimado ?? '20–30 min'),
       deliveryFee: 0,
       tag: row.etiqueta ?? null,
-      img: row.imagen_url ?? FALLBACK_IMAGE,
+      img: getRestaurantImageUrl(row.imagen_url),
       items: (row.detalle_producto ?? []).flatMap((detail: {
         precio: number | string
         disponible: boolean
@@ -62,16 +76,27 @@ export function useRestaurants() {
   }, [])
 
   useEffect(() => {
-    void syncAvailability()
-    const interval = window.setInterval(() => { void syncAvailability() }, 5000)
-    const channel = supabase.channel('restaurant-catalog')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'detalle_producto' }, () => { void syncAvailability() })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'producto' }, () => { void syncAvailability() })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'restaurante' }, () => { void syncAvailability() })
-      .subscribe()
+    const refresh = () => { void syncAvailability().catch(() => {}) }
+    refresh()
+    const interval = window.setInterval(refresh, 5000)
+    const refreshOnVisible = () => {
+      if (document.visibilityState === 'visible') refresh()
+    }
+    document.addEventListener('visibilitychange', refreshOnVisible)
+    const channel = supabase.channel(`restaurante-${crypto.randomUUID()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'detalle_producto' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'producto' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'restaurante' }, refresh)
+      .subscribe((_status, subscriptionError) => {
+        if (subscriptionError) {
+          console.error('[foto] suscribir lista de restaurantes', subscriptionError)
+          setLoadError(subscriptionError.message)
+        }
+      })
 
     return () => {
       window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', refreshOnVisible)
       void supabase.removeChannel(channel)
     }
   }, [syncAvailability])
@@ -95,7 +120,7 @@ export function useRestaurants() {
       lng: data.lng ?? -69.3467,
       tiempo_estimado: data.time,
       etiqueta: data.tag,
-      imagen_url: data.img,
+      imagen_url: data.img || null,
       calificacion_base: data.rating,
       activo: data.active,
       pm_banco: data.pagoMovil?.banco || null,
@@ -103,9 +128,8 @@ export function useRestaurants() {
       pm_cedula_rif: data.pagoMovil?.cedula || null,
     }).select('id_restaurante').single()
     if (error) throw error
-    await syncAvailability()
     return String(inserted.id_restaurante)
-  }, [syncAvailability])
+  }, [])
 
   const update = useCallback(async (id: string, data: Partial<Restaurant>) => {
     const payload: Record<string, unknown> = {}
@@ -113,15 +137,14 @@ export function useRestaurants() {
     if (data.name !== undefined) payload.nombre = data.name
     if (data.time !== undefined) payload.tiempo_estimado = data.time
     if (data.tag !== undefined) payload.etiqueta = data.tag
-    if (data.img !== undefined) payload.imagen_url = data.img
+    if (data.img !== undefined) payload.imagen_url = data.img || null
     if (data.rating !== undefined) payload.calificacion_base = data.rating
     if (data.lat !== undefined) payload.lat = data.lat
     if (data.lng !== undefined) payload.lng = data.lng
     if (data.whatsapp !== undefined) payload.telefono = data.whatsapp.replace(/\D/g, '')
     const { error } = await supabase.from('restaurante').update(payload).eq('id_restaurante', id)
     if (error) throw error
-    await syncAvailability()
-  }, [syncAvailability])
+  }, [])
 
   const remove = useCallback(async (id: string) => {
     const data = await eliminarRestaurante(id)
@@ -129,7 +152,7 @@ export function useRestaurants() {
     return String(data)
   }, [syncAvailability])
 
-  return { restaurants, reload, add, update, remove }
+  return { restaurants, error: loadError, reload, add, update, remove }
 }
 
 function inferCategory(name: string): string {

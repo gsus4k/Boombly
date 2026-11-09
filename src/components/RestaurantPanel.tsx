@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { ajustarStock, listarProductos, marcarDisponibilidad } from '../lib/productos'
+import { getRestaurantImageUrl } from '../data/repository'
 import AccountSettings from './AccountSettings'
 import ForgotPassword from './ForgotPassword'
 
 const inputCls =
   'w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-xl px-3 py-3 text-sm outline-none focus:border-[#2563eb] transition-colors placeholder:text-[#555]'
 
-type RestaurantRelation = { nombre?: string | null; activo?: boolean | null } | Array<{ nombre?: string | null; activo?: boolean | null }> | null
+type RestaurantRelation = { nombre?: string | null; imagen_url?: string | null; activo?: boolean | null } | Array<{ nombre?: string | null; imagen_url?: string | null; activo?: boolean | null }> | null
 type AssignedRestaurant = {
   id_restaurante: string
   restaurante: RestaurantRelation
@@ -26,6 +27,8 @@ const relatedName = (relation: RestaurantRelation | undefined) =>
   (Array.isArray(relation) ? relation[0]?.nombre : relation?.nombre) ?? 'Restaurante'
 const relatedActive = (relation: RestaurantRelation | undefined) =>
   Array.isArray(relation) ? relation[0]?.activo : relation?.activo
+const relatedImage = (relation: RestaurantRelation | undefined) =>
+  getRestaurantImageUrl(Array.isArray(relation) ? relation[0]?.imagen_url : relation?.imagen_url)
 
 export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   const [email, setEmail] = useState('')
@@ -46,6 +49,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   const [role, setRole] = useState<string | null>(null)
   const [roleChecked, setRoleChecked] = useState(false)
   const [restaurantView, setRestaurantView] = useState<'gestion' | 'cuenta'>('gestion')
+  const [failedRestaurantImage, setFailedRestaurantImage] = useState('')
   const [sessionNotice, setSessionNotice] = useState('')
   const [expired, setExpired] = useState(false)
   const previousSession = useRef<{ email: string; role: string | null } | null>(null)
@@ -83,10 +87,11 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     setError('')
     const { data, error: queryError } = await supabase
       .from('restaurante_gestor')
-      .select('id_restaurante, restaurante(nombre, activo)')
+      .select('id_restaurante, restaurante(nombre, imagen_url, activo)')
 
     setLoadingRestaurants(false)
     if (queryError) {
+      console.error('[foto] cargar restaurante del gestor', queryError)
       if (isExpiredSessionError(queryError.message)) {
         setExpired(true)
         setLoggedIn(false)
@@ -252,6 +257,30 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   }, [restaurantId])
 
   useEffect(() => {
+    if (!loggedIn || role !== 'restaurante') return
+
+    const refresh = () => { void loadRestaurants() }
+    const refreshOnVisible = () => {
+      if (document.visibilityState === 'visible') refresh()
+    }
+    document.addEventListener('visibilitychange', refreshOnVisible)
+    const channel = supabase
+      .channel(`restaurante-${crypto.randomUUID()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'restaurante' }, refresh)
+      .subscribe((_status, subscriptionError) => {
+        if (subscriptionError) {
+          console.error('[foto] suscribir restaurante del gestor', subscriptionError)
+          setError(subscriptionError.message)
+        }
+      })
+
+    return () => {
+      document.removeEventListener('visibilitychange', refreshOnVisible)
+      void supabase.removeChannel(channel)
+    }
+  }, [loggedIn, role])
+
+  useEffect(() => {
     if (!restaurantId) return
     const channel = supabase
       .channel(`stock-${restaurantId}`)
@@ -321,9 +350,39 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
             <p className="text-[#3b82f6] text-xs uppercase tracking-widest font-bold">Restaurante</p>
             <h2 className="font-display font-black text-xl sm:text-2xl">Panel del restaurante</h2>
             {loggedIn && sessionEmail && <p className="text-xs text-[#888] mt-1">Sesión de {sessionEmail} · {role ?? 'sin rol'}</p>}
-            {restaurants[0] && <p className="text-sm font-bold text-white mt-1">{relatedName(restaurants[0].restaurante)} · {sessionEmail}</p>}
+            {restaurants[0] && (() => {
+              const restaurantName = relatedName(restaurants[0].restaurante)
+              const imageUrl = relatedImage(restaurants[0].restaurante)
+              return (
+                <div className="flex items-center gap-3 mt-2">
+                  <div className="relative w-12 h-12 rounded-xl bg-[#1c1c1c] grid place-items-center font-display font-black text-lg text-[#888] overflow-hidden shrink-0">
+                    <span className="absolute inset-0 grid place-items-center">{restaurantName.charAt(0).toUpperCase()}</span>
+                    {imageUrl && failedRestaurantImage !== imageUrl && (
+                      <img
+                        src={imageUrl}
+                        alt={restaurantName}
+                        loading="lazy"
+                        onError={() => {
+                          console.error('[foto] mostrar foto de Soy restaurante', new Error(`No se pudo cargar la foto de ${restaurantName}`))
+                          setFailedRestaurantImage(imageUrl)
+                        }}
+                        className="w-full h-full object-cover"
+                      />
+                    )}
+                  </div>
+                  <p className="text-sm font-bold text-white">{restaurantName} · {sessionEmail}</p>
+                </div>
+              )
+            })()}
           </div>
-          <button type="button" onClick={onClose} aria-label="Cerrar" className="text-[#777] hover:text-white text-xl">✕</button>
+          <div className="flex items-center gap-3">
+            {loggedIn && role === 'restaurante' && (
+              <button type="button" onClick={() => void loadRestaurants()} className="text-xs text-[#3b82f6] hover:text-white">
+                Actualizar
+              </button>
+            )}
+            <button type="button" onClick={onClose} aria-label="Cerrar" className="text-[#777] hover:text-white text-xl">✕</button>
+          </div>
         </div>
 
         {!loggedIn ? (

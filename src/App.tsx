@@ -457,6 +457,7 @@ export default function App() {
             </h2>
           </div>
 
+          {repo.error && <p className="text-red-400 text-sm mb-4">No se pudo actualizar la lista de restaurantes: {repo.error}</p>}
           {filtered.length === 0 ? (
             <div className="text-center py-20">
               <div className="text-6xl mb-4">🔍</div>
@@ -472,11 +473,20 @@ export default function App() {
                   onClick={() => setSelectedId(rest.id)}
                 >
                   <div className="relative overflow-hidden h-44 bg-[#1c1c1c]">
-                    <img
-                      src={rest.img}
-                      alt={rest.name}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                    />
+                    <div className="absolute inset-0 grid place-items-center font-display font-black text-5xl text-[#555]" aria-hidden="true">
+                      {rest.name.charAt(0).toUpperCase()}
+                    </div>
+                    {rest.img && (
+                      <img
+                        src={rest.img}
+                        alt={rest.name}
+                        onError={event => {
+                          console.error('[foto] mostrar foto del menú', new Error(`No se pudo cargar la foto de ${rest.name}`))
+                          event.currentTarget.style.display = 'none'
+                        }}
+                        className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                      />
+                    )}
                     <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
                     {rest.tag && (
                       <span className={`absolute top-3 left-3 text-xs font-display font-black px-2 py-1 rounded-lg ${TAG_COLORS[rest.tag] || 'bg-[#2563eb] text-white'}`}>
@@ -518,7 +528,20 @@ export default function App() {
             onClick={e => e.stopPropagation()}
           >
             <div className="relative h-44 shrink-0 bg-[#1c1c1c]">
-              <img src={selected.img} alt={selected.name} className="w-full h-full object-cover" />
+              <div className="absolute inset-0 grid place-items-center font-display font-black text-5xl text-[#555]" aria-hidden="true">
+                {selected.name.charAt(0).toUpperCase()}
+              </div>
+              {selected.img && (
+                <img
+                  src={selected.img}
+                  alt={selected.name}
+                  onError={event => {
+                    console.error('[foto] mostrar foto del restaurante', new Error(`No se pudo cargar la foto de ${selected.name}`))
+                    event.currentTarget.style.display = 'none'
+                  }}
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              )}
               <div className="absolute inset-0 bg-gradient-to-t from-[#111] via-black/20 to-transparent" />
               <button
                 onClick={() => setSelectedId(null)}

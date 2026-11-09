@@ -10,6 +10,7 @@ import Reports from './Reports'
 import Customers from './Customers'
 import AccountSettings from './AccountSettings'
 import CuentasRestaurantes from './CuentasRestaurantes'
+import { getRestaurantImageUrl } from '../data/repository'
 import { supabase } from '../lib/supabase'
 import {
   cambiarEstadoRestaurante,
@@ -28,27 +29,43 @@ type Auth = ReturnType<typeof useAdminAuth>
 type Repo = ReturnType<typeof useRestaurants>
 type OrdersRepo = ReturnType<typeof useOrders>
 
-const FALLBACK_IMG = 'https://images.unsplash.com/photo-1414235077428-338989a2e8c0?w=600&h=400&fit=crop&auto=format'
-
 const inputCls =
   'w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[#2563eb] transition-colors placeholder:text-[#555]'
 const labelCls = 'block text-xs font-display font-semibold text-[#888] uppercase tracking-wider mb-1.5'
 
-function resizeImage(file: File, max = 480): Promise<string> {
+const RESTAURANT_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+const RESTAURANT_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
+
+function resizeRestaurantImage(file: File): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file)
     const im = new Image()
     im.onload = () => {
-      const scale = Math.min(1, max / Math.max(im.width, im.height))
+      const scale = Math.min(1, 1200 / Math.max(im.width, im.height))
       const c = document.createElement('canvas')
       c.width = Math.round(im.width * scale)
       c.height = Math.round(im.height * scale)
-      c.getContext('2d')!.drawImage(im, 0, 0, c.width, c.height)
-      URL.revokeObjectURL(url)
-      resolve(c.toDataURL('image/jpeg', 0.8))
+      const context = c.getContext('2d')
+      if (!context) {
+        URL.revokeObjectURL(url)
+        reject(new Error('No se pudo procesar la imagen'))
+        return
+      }
+      context.drawImage(im, 0, 0, c.width, c.height)
+      c.toBlob(blob => {
+        URL.revokeObjectURL(url)
+        if (!blob || blob.type !== 'image/webp') {
+          reject(new Error('No se pudo convertir la imagen a WebP'))
+          return
+        }
+        resolve(blob)
+      }, 'image/webp', 0.85)
     }
 
-    im.onerror = () => reject(new Error('Imagen no válida'))
+    im.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('Imagen no válida'))
+    }
     im.src = url
   })
 }
@@ -94,7 +111,7 @@ const toForm = (r: Restaurant): FormState => ({
   lat: String(r.lat ?? 10.0678),
   lng: String(r.lng ?? -69.3467),
   tag: r.tag ?? '',
-  img: r.img,
+  img: getRestaurantImageUrl(r.img),
   active: r.active,
   pmBanco: r.pagoMovil?.banco ?? '',
   pmTelefono: r.pagoMovil?.telefono ?? '',
@@ -159,14 +176,21 @@ function RestaurantForm({
   saveError,
 }: {
   initial: FormState
-  onSave: (data: Omit<Restaurant, 'id' | 'createdAt'>) => void | Promise<void>
+  onSave: (data: Omit<Restaurant, 'id' | 'createdAt'>, imageFile: File | null) => void | Promise<void>
   onCancel: () => void
   saving?: boolean
   saveError?: string
 }) {
   const [f, setF] = useState<FormState>(initial)
   const [error, setError] = useState('')
+  const [imageFile, setImageFile] = useState<File | null>(null)
+  const [preview, setPreview] = useState(initial.img)
+  const previewObjectUrl = useRef<string | null>(null)
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF(p => ({ ...p, [k]: v }))
+
+  useEffect(() => () => {
+    if (previewObjectUrl.current) URL.revokeObjectURL(previewObjectUrl.current)
+  }, [])
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -191,10 +215,10 @@ function RestaurantForm({
       lat,
       lng,
       tag: f.tag || null,
-      img: f.img.trim() || FALLBACK_IMG,
+      img: getRestaurantImageUrl(f.img),
       items: [],
       active: f.active,
-    })
+    }, imageFile)
   }
 
   return (
@@ -260,31 +284,34 @@ function RestaurantForm({
       <div className="md:col-span-2">
         <label className={labelCls}>Foto del restaurante</label>
         <div className="flex gap-3 items-center">
-          <input
-            className={inputCls}
-            value={f.img.startsWith('data:') ? '' : f.img}
-            onChange={e => set('img', e.target.value)}
-            placeholder={f.img.startsWith('data:') ? 'Foto subida desde tu dispositivo' : 'Pega la URL (https://...)'}
-          />
           <label className="shrink-0 cursor-pointer border border-[#2563eb] text-[#3b82f6] hover:bg-[#2563eb] hover:text-white transition-colors px-3 py-2.5 rounded-xl text-sm font-display font-semibold">
             Subir foto
             <input
               type="file"
-              accept="image/*"
+              accept="image/jpeg,image/png,image/webp"
               className="hidden"
-              onChange={async e => {
+              onChange={e => {
                 const file = e.target.files?.[0]
                 if (!file) return
-                try {
-                  set('img', await resizeImage(file, 800))
-                } catch (imageError) {
-                  setError(imageError instanceof Error ? imageError.message : 'No se pudo leer la imagen.')
-                }
+                if (previewObjectUrl.current) URL.revokeObjectURL(previewObjectUrl.current)
+                previewObjectUrl.current = URL.createObjectURL(file)
+                setPreview(previewObjectUrl.current)
+                setImageFile(file)
+                setError('')
                 e.target.value = ''
               }}
             />
           </label>
-          <img src={f.img || FALLBACK_IMG} alt="Vista previa" className="w-16 h-10 rounded-lg object-cover bg-[#1c1c1c] shrink-0" />
+          <span className="min-w-0 flex-1 truncate text-xs text-[#888]">
+            {imageFile?.name ?? (preview ? 'Foto guardada' : 'Sin foto')}
+          </span>
+          {preview ? (
+            <img src={preview} alt="Vista previa del restaurante" className="w-16 h-10 rounded-lg object-cover bg-[#1c1c1c] shrink-0" />
+          ) : (
+            <div className="w-16 h-10 rounded-lg bg-[#1c1c1c] grid place-items-center text-[#777] shrink-0">
+              {f.name.trim().charAt(0).toUpperCase()}
+            </div>
+          )}
         </div>
       </div>
       <label className="md:col-span-2 flex items-center gap-2 text-sm text-[#ccc] cursor-pointer">
@@ -775,6 +802,7 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
   const [savingMenu, setSavingMenu] = useState(false)
   const [menuError, setMenuError] = useState('')
   const [expandedProducts, setExpandedProducts] = useState<string[]>([])
+  const [pendingRestaurantId, setPendingRestaurantId] = useState<string | null>(null)
 
   useEffect(() => {
     const refreshAccount = () => void auth.refreshRole()
@@ -784,33 +812,89 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
 
   const list = repo.restaurants.filter(r => r.name.toLowerCase().includes(query.toLowerCase()))
 
-  const saveMenu = async (restaurant: Omit<Restaurant, 'id' | 'createdAt'>) => {
+  const saveMenu = async (restaurant: Omit<Restaurant, 'id' | 'createdAt'>, imageFile: File | null) => {
     setSavingMenu(true)
     setMenuError('')
 
     try {
       const { data: sessionData } = await supabase.auth.getSession()
-      if (!sessionData.session) {
-        setMenuError('Inicia sesión como administrador')
-        setSavingMenu(false)
-        return
-      }
-
-    } catch (error) {
-      console.error('[guardar producto] paso 1: sesión', error)
-      setMenuError(`Paso 1 (sesión): ${error instanceof Error ? error.message : String(error)}`)
-      setSavingMenu(false)
-      return
-    }
-
-    try {
+      if (!sessionData.session) throw new Error('Inicia sesión como administrador')
+      let idRestaurante = ''
       if (editing === 'new') {
-        await repo.add(restaurant)
+        if (pendingRestaurantId) {
+          idRestaurante = pendingRestaurantId
+          await repo.update(idRestaurante, restaurant)
+        } else {
+          idRestaurante = await repo.add(restaurant)
+          setPendingRestaurantId(idRestaurante)
+        }
       }
-      else if (editing) await repo.update(editing.id, restaurant)
+      else if (editing) {
+        idRestaurante = editing.id
+        await repo.update(idRestaurante, restaurant)
+      }
+
+      if (!idRestaurante) throw new Error('No se pudo identificar el restaurante.')
+
+      if (imageFile) {
+        if (!RESTAURANT_IMAGE_TYPES.has(imageFile.type) || imageFile.size > RESTAURANT_IMAGE_MAX_BYTES) {
+          const validationError = new Error('Formato no válido o archivo demasiado grande')
+          console.error('[foto] validar foto del restaurante', validationError)
+          throw validationError
+        }
+
+        let blob: Blob
+        try {
+          blob = await resizeRestaurantImage(imageFile)
+        } catch (resizeError) {
+          console.error('[foto] procesar foto del restaurante', resizeError)
+          throw resizeError
+        }
+
+        const previousImageUrl = editing && editing !== 'new' ? getRestaurantImageUrl(editing.img) : ''
+        const imagePath = `${idRestaurante}/${Date.now()}.webp`
+        const { error: uploadError } = await supabase.storage
+          .from('restaurantes')
+          .upload(imagePath, blob, { contentType: 'image/webp', upsert: false })
+        if (uploadError) {
+          console.error('[foto] subir foto del restaurante', uploadError)
+          throw uploadError
+        }
+
+        const { data: publicUrlData } = supabase.storage.from('restaurantes').getPublicUrl(imagePath)
+        const { data: updatedRows, error: imageUpdateError } = await supabase
+          .from('restaurante')
+          .update({ imagen_url: publicUrlData.publicUrl })
+          .eq('id_restaurante', idRestaurante)
+          .select('id_restaurante')
+        if (imageUpdateError) {
+          console.error('[foto] guardar URL de la foto', imageUpdateError)
+          throw imageUpdateError
+        }
+        if (!updatedRows?.length) {
+          const noRowsError = new Error('No se guardó la foto')
+          console.error('[foto] guardar URL de la foto', noRowsError)
+          throw noRowsError
+        }
+
+        if (previousImageUrl && previousImageUrl !== publicUrlData.publicUrl) {
+          const marker = '/object/public/restaurantes/'
+          const previousPath = previousImageUrl.split(marker)[1]?.split(/[?#]/, 1)[0]
+          if (previousPath) {
+            const { error: removeError } = await supabase.storage.from('restaurantes').remove([previousPath])
+            if (removeError) {
+              console.error('[foto] borrar foto anterior', removeError)
+              setMenuError('La foto se guardó, pero no se pudo borrar la imagen anterior.')
+            }
+          }
+        }
+      }
+
+      await repo.reload()
       setEditing(null)
+      setPendingRestaurantId(null)
     } catch (error) {
-      console.error('[admin] guardar restaurante', error)
+      console.error('[foto] guardar restaurante', error)
       setMenuError(error instanceof Error ? error.message : 'No se pudo guardar el restaurante.')
     } finally {
       setSavingMenu(false)
@@ -866,19 +950,36 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
               {editing === 'new' ? 'Nuevo restaurante' : `Editar ${editing.name}`}
             </h3>
             <RestaurantForm
+              key={editing === 'new' ? 'new' : editing.id}
               initial={editing === 'new' ? emptyForm : toForm(editing)}
-              onCancel={() => setEditing(null)}
+              onCancel={() => { setEditing(null); setPendingRestaurantId(null) }}
               saving={savingMenu}
               saveError={menuError}
-              onSave={data => saveMenu(data)}
+              onSave={(data, imageFile) => saveMenu(data, imageFile)}
             />
           </div>
         ) : (
           <>
+            {(menuError || repo.error) && <p className="text-red-400 text-sm">{menuError || repo.error}</p>}
             <div className="flex gap-3">
               <input className={inputCls} placeholder="Buscar restaurante..." value={query} onChange={e => setQuery(e.target.value)} />
               <button
-                onClick={() => setEditing('new')}
+                type="button"
+                onClick={async () => {
+                  setMenuError('')
+                  try {
+                    await repo.reload()
+                  } catch (refreshError) {
+                    console.error('[foto] actualizar lista de restaurantes', refreshError)
+                    setMenuError(refreshError instanceof Error ? refreshError.message : String(refreshError))
+                  }
+                }}
+                className="shrink-0 border border-[#2a2a2a] hover:border-[#2563eb] px-4 rounded-xl text-sm"
+              >
+                Actualizar
+              </button>
+              <button
+                onClick={() => { setMenuError(''); setPendingRestaurantId(null); setEditing('new') }}
                 className="shrink-0 bg-[#2563eb] hover:bg-[#1d4ed8] transition-colors px-5 rounded-xl font-display font-black text-sm"
               >
                 + Agregar
@@ -891,7 +992,20 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
               {list.map(r => (
                 <div key={r.id} className="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3">
                   <div className="flex items-center gap-3">
-                  <img src={r.img} alt={r.name} className="w-16 h-12 rounded-lg object-cover bg-[#1c1c1c] shrink-0" />
+                  <div className="relative w-16 h-12 rounded-lg bg-[#1c1c1c] shrink-0 grid place-items-center font-display font-black text-[#777]">
+                    {r.name.charAt(0).toUpperCase()}
+                    {r.img && (
+                      <img
+                        src={r.img}
+                        alt={r.name}
+                        onError={event => {
+                          console.error('[foto] mostrar foto en lista admin', new Error(`No se pudo cargar la foto de ${r.name}`))
+                          event.currentTarget.style.display = 'none'
+                        }}
+                        className="absolute inset-0 w-full h-full rounded-lg object-cover"
+                      />
+                    )}
+                  </div>
                   <div className="flex-1 min-w-0">
                     <p className="font-display font-bold truncate">{r.name}</p>
                     {!r.active && <span className="text-[11px] text-amber-400">Inactivo</span>}
