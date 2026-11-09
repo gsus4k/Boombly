@@ -1,5 +1,3 @@
-export type Category = { id: string; label: string; emoji: string }
-
 export type MenuItem = { id?: string; name: string; description?: string; price: number; img?: string; available?: boolean; stock?: number | null }
 
 export type PagoMovilInfo = { banco: string; telefono: string; cedula: string }
@@ -8,6 +6,8 @@ export type Restaurant = {
   id: string
   name: string
   category: string
+  categoryName?: string
+  categoryEmoji?: string | null
   rating: number
   time: string
   deliveryFee: number

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRestaurants } from './data/repository'
-import { useSettings } from './data/settings'
+import { useCategories } from './data/categories'
 import { useAdminAuth } from './data/auth'
 import { useCustomers } from './data/customer'
 import { compressImage, PAGO_MOVIL } from './data/payment'
@@ -37,8 +37,21 @@ export default function App() {
   const [adminOpen, setAdminOpen] = useState(false)
   const [restaurantPanelOpen, setRestaurantPanelOpen] = useState(false)
   const repo = useRestaurants()
-  const settings = useSettings()
-  const CATEGORIES = settings.categories
+  const { categories, error: categoriesError } = useCategories()
+  const activeCategoryFilters = categories.filter(category =>
+    repo.restaurants.some(restaurant => restaurant.active && restaurant.category === String(category.id_categoria)),
+  )
+  const categoryFilters = [
+    { id: 'all', nombre: 'Todo', emoji: '✨' },
+    ...activeCategoryFilters.map(category => ({
+      id: String(category.id_categoria),
+      nombre: category.nombre,
+      emoji: category.emoji,
+    })),
+  ]
+  const selectedCategory = categoryFilters.some(category => category.id === activeCategory)
+    ? activeCategory
+    : 'all'
   const auth = useAdminAuth()
   const ordersRepo = useOrders()
   const [checkoutOpen, setCheckoutOpen] = useState(false)
@@ -127,7 +140,7 @@ export default function App() {
 
   const filtered = repo.restaurants.filter(r => {
     if (!r.active) return false
-    const matchCat = activeCategory === 'all' || r.category === activeCategory
+    const matchCat = selectedCategory === 'all' || r.category === selectedCategory
     const matchSearch = r.name.toLowerCase().includes(search.toLowerCase()) ||
       r.items.some(i => i.name.toLowerCase().includes(search.toLowerCase()) || i.description?.toLowerCase().includes(search.toLowerCase()))
     return matchCat && matchSearch
@@ -432,18 +445,18 @@ export default function App() {
 
         {/* CATEGORIES */}
         <div className="flex gap-2 overflow-x-auto category-scroll pb-2 mb-8">
-          {CATEGORIES.map(cat => (
+          {categoryFilters.map(cat => (
             <button
               key={cat.id}
               onClick={() => setActiveCategory(cat.id)}
               className={`shrink-0 flex items-center gap-2 px-4 py-2 rounded-full font-display font-semibold text-sm transition-all ${
-                activeCategory === cat.id
+                selectedCategory === cat.id
                   ? 'bg-[#2563eb] text-white'
                   : 'bg-[#141414] text-[#888] hover:text-white border border-[#2a2a2a]'
               }`}
             >
-              <span>{cat.emoji}</span>
-              <span>{cat.label}</span>
+              <span>{cat.emoji ?? ''}</span>
+              <span>{cat.nombre}</span>
             </button>
           ))}
         </div>
@@ -452,11 +465,12 @@ export default function App() {
         <div className="mb-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-display font-black text-2xl">
-              {activeCategory === 'all' ? 'Todos los restaurantes' : CATEGORIES.find(c => c.id === activeCategory)?.label}
+              {selectedCategory === 'all' ? 'Todos los restaurantes' : categoryFilters.find(category => category.id === selectedCategory)?.nombre}
               <span className="text-[#555] font-normal text-base ml-2">({filtered.length})</span>
             </h2>
           </div>
 
+          {categoriesError && <p className="text-red-400 text-sm mb-4">No se pudieron cargar las categorías: {categoriesError}</p>}
           {repo.error && <p className="text-red-400 text-sm mb-4">No se pudo actualizar la lista de restaurantes: {repo.error}</p>}
           {filtered.length === 0 ? (
             <div className="text-center py-20">
@@ -501,6 +515,11 @@ export default function App() {
 
                   <div className="p-4">
                     <h3 className="font-display font-black text-lg leading-tight mb-1">{rest.name}</h3>
+                    <p className="text-[#888] text-xs mb-2">
+                      {rest.categoryName
+                        ? `${rest.categoryEmoji ? `${rest.categoryEmoji} ` : ''}${rest.categoryName}`
+                        : 'Sin categoría'}
+                    </p>
                     <div className="flex items-center gap-3 text-[#666] text-xs mb-3">
                       <span>⏱ {rest.time}</span>
                       <span>•</span>
@@ -570,7 +589,7 @@ export default function App() {
                         {item.img ? (
                           <img src={item.img} alt={item.name} className="w-full h-full object-cover" />
                         ) : (
-                          CATEGORIES.find(c => c.id === selected.category)?.emoji ?? '🍽️'
+                          selected.categoryEmoji ?? '🍽️'
                         )}
                       </div>
                       <div className="min-w-0">
@@ -754,7 +773,7 @@ export default function App() {
 
       {authOpen && <CustomerAuth onRegister={customersRepo.register} onLogin={customersRepo.login} onDone={onAuthDone} onClose={() => setAuthOpen(null)} />}
 
-      {adminOpen && <AdminPanel auth={auth} repo={repo} ordersRepo={ordersRepo} customers={customersRepo.customers} settings={settings} onClose={() => setAdminOpen(false)} />}
+      {adminOpen && <AdminPanel auth={auth} repo={repo} ordersRepo={ordersRepo} customers={customersRepo.customers} onClose={() => setAdminOpen(false)} />}
       {restaurantPanelOpen && <RestaurantPanel onClose={() => setRestaurantPanelOpen(false)} />}
 
       {/* CART PANEL */}

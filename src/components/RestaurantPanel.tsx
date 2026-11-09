@@ -1,14 +1,28 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { ajustarStock, listarProductos, marcarDisponibilidad } from '../lib/productos'
 import { getRestaurantImageUrl } from '../data/repository'
+import { useDatosEnVivo } from '../lib/useDatosEnVivo'
 import AccountSettings from './AccountSettings'
 import ForgotPassword from './ForgotPassword'
 
 const inputCls =
   'w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-xl px-3 py-3 text-sm outline-none focus:border-[#2563eb] transition-colors placeholder:text-[#555]'
 
-type RestaurantRelation = { nombre?: string | null; imagen_url?: string | null; activo?: boolean | null } | Array<{ nombre?: string | null; imagen_url?: string | null; activo?: boolean | null }> | null
+type RestaurantCategory = { nombre?: string | null; emoji?: string | null } | Array<{ nombre?: string | null; emoji?: string | null }> | null
+type RestaurantRelation = {
+  nombre?: string | null
+  imagen_url?: string | null
+  activo?: boolean | null
+  id_categoria?: number | null
+  categoria?: RestaurantCategory
+} | Array<{
+  nombre?: string | null
+  imagen_url?: string | null
+  activo?: boolean | null
+  id_categoria?: number | null
+  categoria?: RestaurantCategory
+}> | null
 type AssignedRestaurant = {
   id_restaurante: string
   restaurante: RestaurantRelation
@@ -29,6 +43,13 @@ const relatedActive = (relation: RestaurantRelation | undefined) =>
   Array.isArray(relation) ? relation[0]?.activo : relation?.activo
 const relatedImage = (relation: RestaurantRelation | undefined) =>
   getRestaurantImageUrl(Array.isArray(relation) ? relation[0]?.imagen_url : relation?.imagen_url)
+const relatedCategory = (relation: RestaurantRelation | undefined) => {
+  const restaurant = Array.isArray(relation) ? relation[0] : relation
+  const category = Array.isArray(restaurant?.categoria) ? restaurant.categoria[0] : restaurant?.categoria
+  return category?.nombre
+    ? `${category.emoji ? `${category.emoji} ` : ''}${category.nombre}`
+    : 'Sin categoría'
+}
 
 export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   const [email, setEmail] = useState('')
@@ -44,6 +65,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   const [updatingIds, setUpdatingIds] = useState<string[]>([])
   const [stockInputs, setStockInputs] = useState<Record<string, string>>({})
   const stockLock = useRef(false)
+  const loadedProductRestaurant = useRef('')
   const loginLock = useRef(false)
   const [sessionEmail, setSessionEmail] = useState('')
   const [role, setRole] = useState<string | null>(null)
@@ -61,37 +83,48 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     return /permission denied|auth session missing/i.test(message)
   }
 
-  const loadProducts = async (idRestaurante: string) => {
-    setLoadingProducts(true)
+  const loadProducts = useCallback(async (idRestaurante: string) => {
+    if (!idRestaurante) return
+    if (loadedProductRestaurant.current !== idRestaurante) setLoadingProducts(true)
     setError('')
-    let loaded: Product[] = []
     try {
-      loaded = (await listarProductos(idRestaurante)).map(item => ({ ...item }))
+      const loaded = (await listarProductos(idRestaurante)).map(item => ({ ...item }))
+      setProducts(loaded)
+      loadedProductRestaurant.current = idRestaurante
     } catch (queryError) {
-      setLoadingProducts(false)
-      console.error('[restaurant] cargar productos', queryError)
       if (isExpiredSessionError(queryError)) {
         setExpired(true)
         setLoggedIn(false)
         setProducts([])
+        loadedProductRestaurant.current = ''
       }
       setError(queryError instanceof Error ? queryError.message : String(queryError))
-      return
+      throw queryError
+    } finally {
+      setLoadingProducts(false)
     }
-    setLoadingProducts(false)
-    setProducts(loaded)
-  }
+  }, [])
+
+  const refreshProducts = useCallback(() => {
+    if (!loggedIn || role !== 'restaurante' || !restaurantId) return Promise.resolve()
+    return loadProducts(restaurantId)
+  }, [loggedIn, role, restaurantId, loadProducts])
+
+  useDatosEnVivo(
+    refreshProducts,
+    loggedIn && role === 'restaurante' && restaurantId ? ['detalle_producto', 'producto'] : [],
+  )
 
   const loadRestaurants = async () => {
     setLoadingRestaurants(true)
     setError('')
     const { data, error: queryError } = await supabase
       .from('restaurante_gestor')
-      .select('id_restaurante, restaurante(nombre, imagen_url, activo)')
+      .select('id_restaurante, restaurante(nombre, imagen_url, activo, id_categoria, categoria(nombre, emoji))')
 
     setLoadingRestaurants(false)
     if (queryError) {
-      console.error('[foto] cargar restaurante del gestor', queryError)
+      console.error('[categorias] cargar restaurante del gestor', queryError)
       if (isExpiredSessionError(queryError.message)) {
         setExpired(true)
         setLoggedIn(false)
@@ -103,15 +136,20 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
 
     const assigned = (data ?? []) as AssignedRestaurant[]
     setRestaurants(assigned)
-    const first = assigned[0]
+    const first = assigned.find(item => String(item.id_restaurante) === restaurantId) ?? assigned[0]
     if (!first) {
       setRestaurantId('')
       setProducts([])
+      loadedProductRestaurant.current = ''
       return
     }
-    setRestaurantId(String(first.id_restaurante))
-    setProducts([])
-    if (relatedActive(first.restaurante) !== false) void loadProducts(String(first.id_restaurante))
+    const nextRestaurantId = String(first.id_restaurante)
+    if (nextRestaurantId !== restaurantId) {
+      setProducts([])
+      loadedProductRestaurant.current = ''
+    }
+    setRestaurantId(nextRestaurantId)
+    if (relatedActive(first.restaurante) === false) setProducts([])
   }
 
   useEffect(() => {
@@ -225,38 +263,6 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
   }
 
   useEffect(() => {
-    const channel = supabase
-      .channel('productos-imagenes')
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'producto' }, payload => {
-        const updated = payload.new as { id_producto?: string | number; nombre?: string | null; descripcion?: string | null; imagen_url?: string | null }
-        if (updated.id_producto == null) return
-        setProducts(items => items.map(item =>
-          String(item.id_producto) === String(updated.id_producto)
-            ? {
-                ...item,
-                nombre: updated.nombre ?? item.nombre,
-                descripcion: updated.descripcion ?? item.descripcion,
-                imagen_url: updated.imagen_url ?? item.imagen_url,
-              }
-            : item,
-        ))
-      })
-      .subscribe()
-
-    return () => {
-      void supabase.removeChannel(channel)
-    }
-  }, [])
-
-  useEffect(() => {
-    const refreshOnFocus = () => {
-      if (restaurantId) void loadProducts(restaurantId)
-    }
-    window.addEventListener('focus', refreshOnFocus)
-    return () => window.removeEventListener('focus', refreshOnFocus)
-  }, [restaurantId])
-
-  useEffect(() => {
     if (!loggedIn || role !== 'restaurante') return
 
     const refresh = () => { void loadRestaurants() }
@@ -267,9 +273,10 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
     const channel = supabase
       .channel(`restaurante-${crypto.randomUUID()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'restaurante' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'categoria' }, refresh)
       .subscribe((_status, subscriptionError) => {
         if (subscriptionError) {
-          console.error('[foto] suscribir restaurante del gestor', subscriptionError)
+          console.error('[categorias] suscribir restaurante del gestor', subscriptionError)
           setError(subscriptionError.message)
         }
       })
@@ -278,25 +285,7 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
       document.removeEventListener('visibilitychange', refreshOnVisible)
       void supabase.removeChannel(channel)
     }
-  }, [loggedIn, role])
-
-  useEffect(() => {
-    if (!restaurantId) return
-    const channel = supabase
-      .channel(`stock-${restaurantId}`)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'detalle_producto', filter: `id_restaurante=eq.${restaurantId}` }, payload => {
-        const updated = payload.new as { id_producto?: string; stock?: number | null; disponible?: boolean }
-        if (updated.id_producto == null) return
-        setProducts(items => items.map(item => String(item.id_producto) === String(updated.id_producto)
-          ? { ...item, stock: updated.stock === null || updated.stock === undefined ? null : Number(updated.stock), disponible: updated.disponible ?? item.disponible }
-          : item))
-      })
-      .subscribe()
-
-    return () => {
-      void supabase.removeChannel(channel)
-    }
-  }, [restaurantId])
+  }, [loggedIn, role, restaurantId])
 
   const toggleAvailability = async (productId: string, disponible: boolean) => {
     setUpdatingIds(ids => [...ids, productId])
@@ -370,7 +359,10 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
                       />
                     )}
                   </div>
-                  <p className="text-sm font-bold text-white">{restaurantName} · {sessionEmail}</p>
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-white">{restaurantName} · {sessionEmail}</p>
+                    <p className="text-xs text-[#888] mt-1">{relatedCategory(restaurants[0].restaurante)}</p>
+                  </div>
                 </div>
               )
             })()}

@@ -1,17 +1,19 @@
-import { useEffect, useRef, useState } from 'react'
-import { CATEGORIES, TAGS } from '../data/seed'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { TAGS } from '../data/seed'
 import type { Restaurant } from '../data/types'
 import type { useAdminAuth } from '../data/auth'
 import ForgotPassword from './ForgotPassword'
 import type { useRestaurants } from '../data/repository'
 import type { useOrders } from '../data/orders'
 import type { Customer } from '../data/customer'
+import { useCategories, type Categoria } from '../data/categories'
 import Reports from './Reports'
 import Customers from './Customers'
 import AccountSettings from './AccountSettings'
 import CuentasRestaurantes from './CuentasRestaurantes'
 import { getRestaurantImageUrl } from '../data/repository'
 import { supabase } from '../lib/supabase'
+import { useDatosEnVivo } from '../lib/useDatosEnVivo'
 import {
   cambiarEstadoRestaurante,
   eliminarProducto,
@@ -88,7 +90,7 @@ type FormState = {
 
 const emptyForm: FormState = {
   name: '',
-  category: 'burgers',
+  category: '',
   rating: '4.5',
   time: '20–30 min',
   whatsapp: '',
@@ -186,6 +188,7 @@ function RestaurantForm({
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [preview, setPreview] = useState(initial.img)
   const previewObjectUrl = useRef<string | null>(null)
+  const { categories, loading: categoriesLoading, error: categoriesError, reload: reloadCategories } = useCategories()
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF(p => ({ ...p, [k]: v }))
 
   useEffect(() => () => {
@@ -198,6 +201,9 @@ function RestaurantForm({
     const lat = parseFloat(f.lat.replace(',', '.'))
     const lng = parseFloat(f.lng.replace(',', '.'))
     if (!f.name.trim()) return setError('El nombre es obligatorio.')
+    if (!f.category || !categories.some(category => String(category.id_categoria) === f.category)) {
+      return setError(categories.length ? 'Selecciona una categoría.' : 'Crea primero una categoría en la pestaña Categorías')
+    }
     if (!(rating >= 0 && rating <= 5)) return setError('La valoración debe estar entre 0 y 5.')
     if (f.whatsapp.trim() && f.whatsapp.replace(/\D/g, '').length < 10) return setError('El WhatsApp del restaurante no es válido (mínimo 10 dígitos).')
     if (!(lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180)) return setError('Las coordenadas del restaurante no son válidas.')
@@ -229,11 +235,26 @@ function RestaurantForm({
       </div>
       <div>
         <label className={labelCls}>Categoría</label>
-        <select className={inputCls} value={f.category} onChange={e => set('category', e.target.value)}>
-          {CATEGORIES.filter(c => c.id !== 'all').map(c => (
-            <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>
-          ))}
-        </select>
+        {categoriesLoading ? (
+          <p className="text-xs text-[#888] py-3">Cargando categorías…</p>
+        ) : categories.length === 0 ? (
+          <p className="text-xs text-amber-400 py-3">Crea primero una categoría en la pestaña Categorías</p>
+        ) : (
+          <select required className={inputCls} value={f.category} onChange={e => set('category', e.target.value)}>
+            <option value="">Selecciona una categoría</option>
+            {categories.map(category => (
+              <option key={category.id_categoria} value={String(category.id_categoria)}>
+                {category.emoji ? `${category.emoji} ` : ''}{category.nombre}
+              </option>
+            ))}
+          </select>
+        )}
+        {categoriesError && (
+          <div className="mt-2">
+            <p className="text-red-400 text-xs">No se pudieron cargar las categorías: {categoriesError}</p>
+            <button type="button" onClick={() => void reloadCategories()} className="text-xs text-[#3b82f6] hover:text-white mt-1">Reintentar</button>
+          </div>
+        )}
       </div>
       <div>
         <label className={labelCls}>Etiqueta</label>
@@ -323,7 +344,7 @@ function RestaurantForm({
         <button type="button" onClick={onCancel} className="px-5 py-2.5 rounded-xl border border-[#2a2a2a] text-[#888] hover:text-white font-display font-semibold text-sm">
           Cancelar
         </button>
-        <button disabled={saving} className="px-5 py-2.5 rounded-xl bg-[#2563eb] hover:bg-[#1d4ed8] disabled:opacity-50 transition-colors font-display font-black text-sm">
+        <button disabled={saving || categoriesLoading || categories.length === 0} className="px-5 py-2.5 rounded-xl bg-[#2563eb] hover:bg-[#1d4ed8] disabled:opacity-50 transition-colors font-display font-black text-sm">
           {saving ? 'Guardando…' : 'Guardar restaurante'}
         </button>
       </div>
@@ -331,7 +352,6 @@ function RestaurantForm({
   )
 }
 
-type Categoria = { id_categoria: number; nombre: string; emoji: string | null }
 type Repartidor = { id_repartidor: number; nombre: string; telefono: string; disponible: boolean; creado_en: string }
 
 async function requireAdminSession() {
@@ -340,63 +360,79 @@ async function requireAdminSession() {
 }
 
 function CategoriesManager() {
-  const [items, setItems] = useState<Categoria[]>([])
+  const { categories: items, loading, error: loadError, reload } = useCategories()
   const [nombre, setNombre] = useState('')
   const [emoji, setEmoji] = useState('')
   const [editing, setEditing] = useState<Categoria | null>(null)
-  const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-
-  const load = async () => {
-    setLoading(true)
-    const { data, error: loadError } = await supabase.from('categoria').select('*').order('id_categoria')
-    if (loadError) setError(loadError.message)
-    else setItems(data ?? [])
-    setLoading(false)
-  }
-
-  useEffect(() => { void load() }, [])
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault()
     const cleanName = nombre.trim()
     if (!cleanName) return setError('El nombre es obligatorio.')
-    if (!(await requireAdminSession())) return setError('Inicia sesión como administrador')
+    const operation = editing ? 'editar categoría' : 'agregar categoría'
     setSaving(true)
     setError('')
-    const payload = { nombre: cleanName, emoji: emoji.trim() || null }
-    const result = editing
-      ? await supabase.from('categoria').update(payload).eq('id_categoria', editing.id_categoria)
-      : await supabase.from('categoria').insert(payload)
-    setSaving(false)
-    if (result.error) {
-      if (result.error.code === '23505') return setError('Ya existe una categoría con ese nombre')
-      return setError(result.error.message)
+    try {
+      if (!(await requireAdminSession())) {
+        setError('Inicia sesión como administrador')
+        return
+      }
+      const payload = { nombre: cleanName, emoji: emoji.trim() || null }
+      const result = editing
+        ? await supabase.from('categoria').update(payload).eq('id_categoria', editing.id_categoria)
+        : await supabase.from('categoria').insert(payload)
+      if (result.error) {
+        console.error(`[categorias] ${operation}`, result.error)
+        setError(result.error.code === '23505' ? 'Ya existe una categoría con ese nombre' : result.error.message)
+        return
+      }
+      setNombre('')
+      setEmoji('')
+      setEditing(null)
+      await reload()
+    } catch (saveError) {
+      console.error(`[categorias] ${operation}`, saveError)
+      setError(saveError instanceof Error ? saveError.message : String(saveError))
+    } finally {
+      setSaving(false)
     }
-    setNombre('')
-    setEmoji('')
-    setEditing(null)
-    await load()
   }
 
   const remove = async (item: Categoria) => {
     if (!confirm(`¿Eliminar ${item.nombre}?`)) return
-    if (!(await requireAdminSession())) return setError('Inicia sesión como administrador')
     setSaving(true)
     setError('')
-    const { count, error: removeError } = await supabase
-      .from('categoria')
-      .delete({ count: 'exact' })
-      .eq('id_categoria', item.id_categoria)
-    setSaving(false)
-    if (removeError) {
-      console.error('[admin] eliminar categoría', removeError)
-      if (removeError.code === '23503') return setError('No se puede eliminar: hay restaurantes en esta categoría')
-      return setError(removeError.message)
+    try {
+      if (!(await requireAdminSession())) {
+        setError('Inicia sesión como administrador')
+        return
+      }
+      const { count, error: removeError } = await supabase
+        .from('categoria')
+        .delete({ count: 'exact' })
+        .eq('id_categoria', item.id_categoria)
+      if (removeError) {
+        console.error('[categorias] eliminar categoría', removeError)
+        setError(removeError.code === '23503'
+          ? 'No se puede eliminar: hay restaurantes en esta categoría'
+          : removeError.message)
+        return
+      }
+      if (!count) {
+        const missingError = new Error('La categoría ya no existe o no se pudo eliminar.')
+        console.error('[categorias] eliminar categoría', missingError)
+        setError(missingError.message)
+        return
+      }
+      await reload()
+    } catch (removeError) {
+      console.error('[categorias] eliminar categoría', removeError)
+      setError(removeError instanceof Error ? removeError.message : String(removeError))
+    } finally {
+      setSaving(false)
     }
-    if (!count) return setError('La categoría ya no existe o no se pudo eliminar.')
-    await load()
   }
 
   return (
@@ -419,7 +455,7 @@ function CategoriesManager() {
           Cancelar edición
         </button>
       )}
-      {error && <p className="text-red-400 text-sm">{error}</p>}
+      {(error || loadError) && <p className="text-red-400 text-sm">{error || `No se pudieron cargar las categorías: ${loadError}`}</p>}
       {loading ? <p className="text-[#888] text-sm py-6">Cargando…</p> : (
         <div className="space-y-2">
           {items.length === 0 && <p className="text-center text-[#555] py-10 text-sm">No hay categorías.</p>}
@@ -576,20 +612,19 @@ function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
   const [saving, setSaving] = useState(false)
   const saveLock = useRef(false)
 
-  const load = async () => {
-    setLoading(true)
+  const load = useCallback(async () => {
     setError('')
     try {
       setItems(await listarProductos(restaurantId))
     } catch (loadError) {
-      console.error('[admin] cargar productos', loadError)
       setError(loadError instanceof Error ? loadError.message : String(loadError))
+      throw loadError
     } finally {
       setLoading(false)
     }
-  }
+  }, [restaurantId])
 
-  useEffect(() => { void load() }, [restaurantId])
+  useDatosEnVivo(load, ['detalle_producto', 'producto'])
 
   const openNew = () => {
     productIdRef.current = nuevoIdProducto()
@@ -1010,7 +1045,7 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
                     <p className="font-display font-bold truncate">{r.name}</p>
                     {!r.active && <span className="text-[11px] text-amber-400">Inactivo</span>}
                     <p className="text-xs text-[#666] truncate">
-                      {CATEGORIES.find(c => c.id === r.category)?.label} · {r.items.length} platos · ★ {r.rating}
+                      {r.categoryEmoji ? `${r.categoryEmoji} ` : ''}{r.categoryName || 'Sin categoría'} · {r.items.length} platos · ★ {r.rating}
                     </p>
                   </div>
                   <button

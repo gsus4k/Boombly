@@ -1,15 +1,4 @@
-import type { Category, Restaurant } from './types'
-
-export const CATEGORIES: Category[] = [
-  { id: 'all', label: 'Todo', emoji: '✨' },
-  { id: 'burgers', label: 'Burgers', emoji: '🍔' },
-  { id: 'pizza', label: 'Pizza', emoji: '🍕' },
-  { id: 'sushi', label: 'Sushi', emoji: '🍣' },
-  { id: 'tacos', label: 'Tacos', emoji: '🌮' },
-  { id: 'ramen', label: 'Ramen', emoji: '🍜' },
-  { id: 'desserts', label: 'Dulces', emoji: '🍩' },
-  { id: 'drinks', label: 'Bebidas', emoji: '🧃' },
-]
+import type { Restaurant } from './types'
 
 export const TAGS = ['MÁS PEDIDO', 'NUEVO', 'TOP RATED', 'OFERTA', 'POPULAR']
 
