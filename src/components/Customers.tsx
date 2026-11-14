@@ -3,6 +3,8 @@ import { phoneDigits, type Customer } from '../data/customer'
 import { STATUS_META, type Order } from '../data/orders'
 import type { Restaurant } from '../data/types'
 
+type CustomerRecord = Customer & { createdAt: number }
+
 const inputCls =
   'bg-[#0a0a0a] border border-[#2a2a2a] rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[#2563eb] transition-colors'
 const labelCls = 'block text-xs font-display font-semibold text-[#888] uppercase tracking-wider mb-1.5'
@@ -15,7 +17,7 @@ export default function Customers({
   orders,
 }: {
   restaurants: Restaurant[]
-  customers: Customer[]
+  customers: CustomerRecord[]
   orders: Order[]
 }) {
   const [restId, setRestId] = useState('all')

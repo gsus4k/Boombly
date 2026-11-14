@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { Payment } from './payment'
 
 export type OrderLine = { name: string; price: number; qty: number }
@@ -37,38 +37,12 @@ export type Order = {
   payment?: Payment
 }
 
-// Persistencia aislada (igual que restaurantes): reemplazable por una API.
-const KEY = 'boombly:orders:v1'
-
-function load(): Order[] {
-  try {
-    const raw = localStorage.getItem(KEY)
-    if (raw) return JSON.parse(raw) as Order[]
-  } catch {
-    /* ignore */
-  }
-  return []
-}
-
 export function useOrders() {
-  const [orders, setOrders] = useState<Order[]>(load)
-
-  useEffect(() => {
-    localStorage.setItem(KEY, JSON.stringify(orders))
-  }, [orders])
-
-  // Sincroniza entre pestañas/ventanas: lo que cambia el admin lo ve el cliente al instante.
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === KEY) setOrders(load())
-    }
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
-  }, [])
+  const [orders, setOrders] = useState<Order[]>([])
 
   const addMany = useCallback((list: Omit<Order, 'id' | 'createdAt' | 'status'>[]): Order[] => {
     const now = Date.now()
-    const taken = new Set(load().map(o => o.id))
+    const taken = new Set(orders.map(o => o.id))
     const created = list.map(o => {
       let id: string
       do id = `BB-${crypto.randomUUID().replace(/-/g, '').slice(0, 6).toUpperCase()}`
@@ -78,7 +52,7 @@ export function useOrders() {
     })
     setOrders(prev => [...created, ...prev])
     return created
-  }, [])
+  }, [orders])
 
   const setStatus = useCallback((id: string, status: OrderStatus) => {
     setOrders(prev => prev.map(o => (o.id === id ? { ...o, status } : o)))

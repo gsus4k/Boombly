@@ -4,12 +4,13 @@ import { useCategories } from './data/categories'
 import { useAdminAuth } from './data/auth'
 import { useCustomers } from './data/customer'
 import { compressImage, PAGO_MOVIL } from './data/payment'
-import { useOrders, displayRating, type OrderLocation } from './data/orders'
+import { STATUS_META, useOrders, displayRating, type OrderLocation, type OrderStatus } from './data/orders'
 import { notifyOrderByWhatsApp, mapsUrl } from './data/whatsapp'
 import { DELIVERY, quoteDelivery, type DeliveryQuote } from './data/delivery'
 import type { Restaurant } from './data/types'
 import AdminPanel from './components/AdminPanel'
 import MyOrders from './components/MyOrders'
+import type { CustomerOrder } from './components/MyOrders'
 import CustomerAuth from './components/CustomerAuth'
 import RestaurantPanel from './components/RestaurantPanel'
 import PasswordRecoveryModal from './components/PasswordRecoveryModal'
@@ -18,6 +19,7 @@ import { crearPedido, supabase } from './lib/supabase'
 
 type CartItem = { productId?: string; restaurantId: string; restaurantName: string; name: string; price: number; qty: number; stock?: number | null }
 const cartKey = (i: { restaurantId: string; name: string }) => `${i.restaurantId}:${i.name}`
+const isOrderStatus = (value: string): value is OrderStatus => Object.prototype.hasOwnProperty.call(STATUS_META, value)
 
 const TAG_COLORS: Record<string, string> = {
   'MÁS PEDIDO': 'bg-boom-orange text-white',
@@ -57,6 +59,10 @@ export default function App() {
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const customersRepo = useCustomers()
   const customer = customersRepo.current
+  const [myOrders, setMyOrders] = useState<CustomerOrder[]>([])
+  const [myOrdersLoading, setMyOrdersLoading] = useState(false)
+  const [myOrdersError, setMyOrdersError] = useState('')
+  const [ordersRefresh, setOrdersRefresh] = useState(0)
   const [authOpen, setAuthOpen] = useState<null | 'checkout' | 'orders' | 'plain'>(null)
   const [location, setLocation] = useState<OrderLocation | null>(null)
   const [locStatus, setLocStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
@@ -64,10 +70,12 @@ export default function App() {
   const [pays, setPays] = useState<Record<string, { ref: string; proof: string | null }>>({})
   const [proofError, setProofError] = useState('')
   const [orderError, setOrderError] = useState('')
+  const [orderSubmitting, setOrderSubmitting] = useState(false)
   const [recoveryEmail, setRecoveryEmail] = useState<string | null>(null)
   const [expiredLink, setExpiredLink] = useState(false)
   const recoveryEmailRef = useRef('')
   const alertedUnavailable = useRef(new Set<string>())
+  const placeOrderLock = useRef(false)
   const payOf = (id: string) => pays[id] ?? { ref: '', proof: null }
   const setPay = (id: string, patch: Partial<{ ref: string; proof: string | null }>) =>
     setPays(prev => ({ ...prev, [id]: { ...(prev[id] ?? { ref: '', proof: null }), ...patch } }))
@@ -91,6 +99,51 @@ export default function App() {
     })
     return () => data.subscription.unsubscribe()
   }, [])
+
+  useEffect(() => {
+    if (!customer) {
+      setMyOrders([])
+      setMyOrdersError('')
+      setMyOrdersLoading(false)
+      return
+    }
+
+    let active = true
+    setMyOrders([])
+    setMyOrdersLoading(true)
+    setMyOrdersError('')
+    void supabase.rpc('mis_pedidos', {
+      p_codigo: customer.id,
+      p_telefono: customer.phone,
+    }).then(({ data, error }) => {
+      if (error) throw error
+      if (!active) return
+      setMyOrders((data ?? []).map(row => {
+        if (typeof row.estado !== 'string' || !isOrderStatus(row.estado)) {
+          throw new Error('El servidor devolvió un estado de pedido desconocido.')
+        }
+        return {
+          id: String(row.id_pedido),
+          restaurantName: String(row.restaurante ?? 'Restaurante'),
+          createdAt: new Date(row.creado_en).getTime(),
+          restaurantId: String(row.id_restaurante),
+          deliveryFee: Number(row.costo_envio),
+          subtotal: Number(row.subtotal),
+          total: Number(row.total),
+          status: row.estado,
+          rating: row.calificacion == null ? undefined : Number(row.calificacion),
+        }
+      }))
+    }).catch(error => {
+      if (!active) return
+      console.error('[cliente] cargar mis pedidos', error)
+      setMyOrdersError('No se pudieron cargar tus pedidos. Intenta de nuevo.')
+    }).finally(() => {
+      if (active) setMyOrdersLoading(false)
+    })
+
+    return () => { active = false }
+  }, [customer?.id, customer?.phone, ordersRefresh])
 
   const requestNewPasswordLink = () => {
     setExpiredLink(false)
@@ -180,7 +233,6 @@ export default function App() {
     setCart(prev => prev.filter(i => cartKey(i) !== key))
   }
 
-  const myOrders = customer ? ordersRepo.orders.filter(o => o.customerId === customer.id) : []
   const activeMyOrders = myOrders.filter(o => o.status !== 'entregado' && o.status !== 'cancelado').length
   const ratingOf = (r: Restaurant) => displayRating(r.rating, ordersRepo.orders, r.id)
 
@@ -237,14 +289,16 @@ export default function App() {
   }
 
   const placeOrder = async () => {
-    if (!customer || !location || outOfRange || !quotesReady) return
+    if (placeOrderLock.current || !customer || !location || outOfRange || !quotesReady) return
+    placeOrderLock.current = true
+    setOrderSubmitting(true)
     setOrderError('')
     try {
       const createdInputs = await Promise.all(cartRestaurantIds.map(async id => {
         const lines = cart.filter(i => i.restaurantId === id)
         await crearPedido({
           codigo: customer.id,
-          telefono: customer.phone.replace(/\D/g, ''),
+          telefono: customer.phone,
           id_restaurante: id,
           lat: location.lat,
           lng: location.lng,
@@ -272,6 +326,7 @@ export default function App() {
       }))
       const created = ordersRepo.addMany(createdInputs)
     created.forEach(o => void notifyOrderByWhatsApp(o, repo.restaurants.find(r => r.id === o.restaurantId)?.whatsapp))
+    setOrdersRefresh(refresh => refresh + 1)
     setCheckoutOpen(false)
     setLocation(null)
     setLocStatus('idle')
@@ -281,9 +336,19 @@ export default function App() {
     setCart([])
     } catch (orderFailure) {
       const message = orderFailure instanceof Error ? orderFailure.message : String(orderFailure)
-      console.error('[stock] confirmar pedido', orderFailure)
+      console.error('[cliente] confirmar pedido', orderFailure)
+      if (/cliente no encontrado/i.test(message)) {
+        const notice = 'Tu cuenta no se encontró: regístrate de nuevo o entra con tu código'
+        customersRepo.logout(notice)
+        setCheckoutOpen(false)
+        setAuthOpen('plain')
+        return
+      }
       const stockFailure = /Stock insuficiente|no disponible/i.test(message)
-      setOrderError(stockFailure ? message : message)
+      const visibleMessage = /failed to fetch|network|fetch/i.test(message)
+        ? 'No se pudo contactar con el servidor: revisa tu conexión e intenta de nuevo.'
+        : message
+      setOrderError(visibleMessage)
       if (stockFailure) {
         const fresh = await repo.reload()
         setCart(current => current.flatMap(line => {
@@ -293,6 +358,9 @@ export default function App() {
           return [{ ...line, qty: freshStock === null || freshStock === undefined ? line.qty : Math.min(line.qty, freshStock), stock: freshStock }]
         }))
       }
+    } finally {
+      placeOrderLock.current = false
+      setOrderSubmitting(false)
     }
   }
 
@@ -316,6 +384,14 @@ export default function App() {
         />
       )}
       <EmailChangeModal suppressError={expiredLink} />
+      {customersRepo.notice && !authOpen && (
+        <div role="alert" className="fixed top-20 left-1/2 -translate-x-1/2 z-[80] w-[calc(100%-2rem)] max-w-lg bg-[#111] border border-red-500/30 rounded-2xl p-4 shadow-xl">
+          <p className="text-sm text-red-300">{customersRepo.notice}</p>
+          <button type="button" onClick={() => setAuthOpen('plain')} className="mt-2 text-sm text-[#4d8cff] font-bold">
+            Registrarme o entrar
+          </button>
+        </div>
+      )}
 
       {/* NAV */}
       <nav className="sticky top-0 z-50 bg-[#0a0a0a]/90 backdrop-blur-md border-b border-[#1e1e1e] px-3 sm:px-4 md:px-8 h-16 flex items-center justify-between gap-2">
@@ -758,10 +834,10 @@ export default function App() {
             {orderError && <p className="text-red-400 text-xs mt-3 text-center">{orderError}</p>}
             <button
               onClick={() => void placeOrder()}
-              disabled={!customer || !location || !quotesReady || outOfRange || cartRestaurantIds.some(id => payOf(id).ref.trim().length < 4 || !payOf(id).proof)}
+              disabled={orderSubmitting || !customer || !location || !quotesReady || outOfRange || cartRestaurantIds.some(id => payOf(id).ref.trim().length < 4 || !payOf(id).proof)}
               className="w-full mt-4 bg-[#2563eb] hover:bg-[#1d4ed8] disabled:bg-[#1c1c1c] disabled:text-[#555] disabled:cursor-not-allowed transition-colors py-4 rounded-xl font-display font-black text-lg"
             >
-              Confirmar pedido →
+              {orderSubmitting ? 'Procesando pedido…' : 'Confirmar pedido →'}
             </button>
             {!location && <p className="text-[11px] text-[#777] text-center mt-2">Comparte tu ubicación para calcular el envío.</p>}
             <p className="text-[11px] text-[#555] text-center mt-3">Cada pedido recibe su propio código de seguimiento y se envía por WhatsApp al restaurante con tus datos y ubicación.</p>
@@ -769,11 +845,11 @@ export default function App() {
         </div>
       )}
 
-      {myOrdersOpen && customer && <MyOrders customer={customer} orders={myOrders} onRate={ordersRepo.rate} onLogout={() => { customersRepo.logout(); setMyOrdersOpen(false) }} onClose={() => setMyOrdersOpen(false)} />}
+      {myOrdersOpen && customer && <MyOrders customer={customer} orders={myOrders} loading={myOrdersLoading} error={myOrdersError} onLogout={() => { customersRepo.logout(); setMyOrdersOpen(false) }} onClose={() => setMyOrdersOpen(false)} />}
 
-      {authOpen && <CustomerAuth onRegister={customersRepo.register} onLogin={customersRepo.login} onDone={onAuthDone} onClose={() => setAuthOpen(null)} />}
+      {authOpen && <CustomerAuth onRegister={customersRepo.register} onLogin={customersRepo.login} onDone={onAuthDone} onClose={() => setAuthOpen(null)} notice={customersRepo.notice} />}
 
-      {adminOpen && <AdminPanel auth={auth} repo={repo} ordersRepo={ordersRepo} customers={customersRepo.customers} onClose={() => setAdminOpen(false)} />}
+      {adminOpen && <AdminPanel auth={auth} repo={repo} ordersRepo={ordersRepo} onClose={() => setAdminOpen(false)} />}
       {restaurantPanelOpen && <RestaurantPanel onClose={() => setRestaurantPanelOpen(false)} />}
 
       {/* CART PANEL */}

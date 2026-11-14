@@ -830,8 +830,13 @@ function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
   )
 }
 
-function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth; repo: Repo; ordersRepo: OrdersRepo; customers: Customer[]; onClose: () => void }) {
+function Dashboard({ auth, repo, ordersRepo, onClose }: { auth: Auth; repo: Repo; ordersRepo: OrdersRepo; onClose: () => void }) {
   const [tab, setTab] = useState<'restaurantes' | 'clientes' | 'reportes' | 'categorias' | 'repartidores' | 'cuenta'>('restaurantes')
+  const [customers, setCustomers] = useState<(Customer & { createdAt: number })[]>([])
+  const [customersLoaded, setCustomersLoaded] = useState(false)
+  const [customersLoading, setCustomersLoading] = useState(false)
+  const [customersError, setCustomersError] = useState('')
+  const customersLoadLock = useRef(false)
   const [editing, setEditing] = useState<Restaurant | 'new' | null>(null)
   const [query, setQuery] = useState('')
   const [savingMenu, setSavingMenu] = useState(false)
@@ -846,6 +851,33 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
   }, [auth])
 
   const list = repo.restaurants.filter(r => r.name.toLowerCase().includes(query.toLowerCase()))
+
+  const loadCustomers = async () => {
+    if (customersLoadLock.current) return
+    customersLoadLock.current = true
+    setCustomersLoading(true)
+    setCustomersError('')
+    try {
+      const { data, error } = await supabase
+        .from('cliente')
+        .select('codigo, nombre, telefono, creado_en')
+        .order('creado_en', { ascending: false })
+      if (error) throw error
+      setCustomers((data ?? []).map(row => ({
+        id: row.codigo,
+        name: row.nombre,
+        phone: row.telefono,
+        createdAt: new Date(row.creado_en).getTime(),
+      })))
+      setCustomersLoaded(true)
+    } catch (error) {
+      console.error('[cliente] cargar clientes admin', error)
+      setCustomersError('No se pudieron cargar los clientes. Intenta de nuevo.')
+    } finally {
+      customersLoadLock.current = false
+      setCustomersLoading(false)
+    }
+  }
 
   const saveMenu = async (restaurant: Omit<Restaurant, 'id' | 'createdAt'>, imageFile: File | null) => {
     setSavingMenu(true)
@@ -955,10 +987,14 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
         {(['restaurantes', 'clientes', 'reportes', 'categorias', 'repartidores', 'cuenta'] as const).map(t => (
           <button
             key={t}
-            onClick={() => setTab(t)}
+            disabled={t === 'clientes' && customersLoading}
+            onClick={() => {
+              setTab(t)
+              if (t === 'clientes') void loadCustomers()
+            }}
             className={`px-4 py-2 rounded-lg text-sm font-display font-semibold capitalize transition-colors ${tab === t ? 'bg-[#2563eb] text-white' : 'bg-[#141414] text-[#888] hover:text-white border border-[#2a2a2a]'}`}
           >
-            {t === 'reportes' ? `Reportes (${ordersRepo.orders.length})` : t === 'clientes' ? `Clientes (${customers.length})` : t === 'categorias' ? 'Categorías' : t === 'repartidores' ? 'Repartidores' : t === 'cuenta' ? 'Mi cuenta' : 'Restaurantes'}
+            {t === 'reportes' ? `Reportes (${ordersRepo.orders.length})` : t === 'clientes' ? `Clientes${customersLoaded ? ` (${customers.length})` : ''}` : t === 'categorias' ? 'Categorías' : t === 'repartidores' ? 'Repartidores' : t === 'cuenta' ? 'Mi cuenta' : 'Restaurantes'}
           </button>
         ))}
       </div>
@@ -971,6 +1007,8 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
         <div className="p-5"><DriversManager /></div>
       ) : tab === 'clientes' ? (
         <div className="p-5">
+          {customersLoading && <p role="status" className="text-sm text-[#888] mb-3">Cargando clientes…</p>}
+          {customersError && <p role="alert" className="text-sm text-red-400 mb-3">{customersError}</p>}
           <Customers restaurants={repo.restaurants} customers={customers} orders={ordersRepo.orders} />
         </div>
       ) : tab === 'reportes' ? (
@@ -1098,7 +1136,7 @@ function Dashboard({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth;
   )
 }
 
-export default function AdminPanel({ auth, repo, ordersRepo, customers, onClose }: { auth: Auth; repo: Repo; ordersRepo: OrdersRepo; customers: Customer[]; onClose: () => void }) {
+export default function AdminPanel({ auth, repo, ordersRepo, onClose }: { auth: Auth; repo: Repo; ordersRepo: OrdersRepo; onClose: () => void }) {
   const mismatch = auth.loggedIn && auth.roleChecked && auth.role !== 'admin'
   const loadingRole = auth.loggedIn && !auth.roleChecked
   return (
@@ -1114,7 +1152,7 @@ export default function AdminPanel({ auth, repo, ordersRepo, customers, onClose 
       ) : auth.loggedIn ? (
         <>
           {auth.sessionNotice && <div className="fixed top-4 left-1/2 z-[80] -translate-x-1/2 rounded-xl bg-[#2563eb] px-4 py-3 text-sm text-white shadow-xl">{auth.sessionNotice}</div>}
-          <Dashboard auth={auth} repo={repo} ordersRepo={ordersRepo} customers={customers} onClose={onClose} />
+          <Dashboard auth={auth} repo={repo} ordersRepo={ordersRepo} onClose={onClose} />
         </>
       ) : (
         <>
