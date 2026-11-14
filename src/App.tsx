@@ -62,7 +62,8 @@ export default function App() {
   const [myOrders, setMyOrders] = useState<CustomerOrder[]>([])
   const [myOrdersLoading, setMyOrdersLoading] = useState(false)
   const [myOrdersError, setMyOrdersError] = useState('')
-  const [ordersRefresh, setOrdersRefresh] = useState(0)
+  const refreshCustomerOrders = useRef<() => Promise<void>>(async () => {})
+  const ordersCustomerKey = useRef('')
   const [authOpen, setAuthOpen] = useState<null | 'checkout' | 'orders' | 'plain'>(null)
   const [location, setLocation] = useState<OrderLocation | null>(null)
   const [locStatus, setLocStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
@@ -101,49 +102,97 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    const customerKey = customer ? `${customer.id}:${customer.phone}` : ''
+    if (ordersCustomerKey.current === customerKey) return
+    ordersCustomerKey.current = customerKey
+    setMyOrders([])
+    setMyOrdersError('')
+    setMyOrdersLoading(false)
+  }, [customer?.id, customer?.phone])
+
+  useEffect(() => {
     if (!customer) {
       setMyOrders([])
       setMyOrdersError('')
       setMyOrdersLoading(false)
       return
     }
+    if (!myOrdersOpen) return
 
     let active = true
-    setMyOrders([])
-    setMyOrdersLoading(true)
-    setMyOrdersError('')
-    void supabase.rpc('mis_pedidos', {
-      p_codigo: customer.id,
-      p_telefono: customer.phone,
-    }).then(({ data, error }) => {
-      if (error) throw error
-      if (!active) return
-      setMyOrders((data ?? []).map(row => {
-        if (typeof row.estado !== 'string' || !isOrderStatus(row.estado)) {
-          throw new Error('El servidor devolvió un estado de pedido desconocido.')
+    let inFlight = false
+    const refresh = async (showLoading: boolean) => {
+      if (inFlight) return
+      inFlight = true
+      if (showLoading) setMyOrdersLoading(true)
+      setMyOrdersError('')
+      try {
+        const { data, error } = await supabase.rpc('mis_pedidos', {
+          p_codigo: customer.id,
+          p_telefono: customer.phone,
+        })
+        if (error) throw error
+        const fetchedOrders = (data ?? []).map(row => {
+          if (typeof row.estado !== 'string' || !isOrderStatus(row.estado)) {
+            throw new Error('El servidor devolvió un estado de pedido desconocido.')
+          }
+          if (typeof row.codigo !== 'string' || !/^BB-[A-Z0-9]{6}$/i.test(row.codigo)) {
+            throw new Error('El servidor devolvió un código de pedido inválido.')
+          }
+          return {
+            id: String(row.id_pedido),
+            codigo: row.codigo,
+            restaurantName: String(row.restaurante ?? 'Restaurante'),
+            createdAt: new Date(row.creado_en).getTime(),
+            deliveryFee: Number(row.costo_envio),
+            subtotal: Number(row.subtotal),
+            total: Number(row.total),
+            status: row.estado,
+            rating: row.calificacion == null ? undefined : Number(row.calificacion),
+          }
+        })
+        if (active) setMyOrders(fetchedOrders)
+      } catch (error) {
+        if (active) {
+          console.error('[pedidos] consultar', error)
+          setMyOrdersError('No se pudieron cargar tus pedidos. Intenta de nuevo.')
         }
-        return {
-          id: String(row.id_pedido),
-          restaurantName: String(row.restaurante ?? 'Restaurante'),
-          createdAt: new Date(row.creado_en).getTime(),
-          restaurantId: String(row.id_restaurante),
-          deliveryFee: Number(row.costo_envio),
-          subtotal: Number(row.subtotal),
-          total: Number(row.total),
-          status: row.estado,
-          rating: row.calificacion == null ? undefined : Number(row.calificacion),
-        }
-      }))
-    }).catch(error => {
-      if (!active) return
-      console.error('[cliente] cargar mis pedidos', error)
-      setMyOrdersError('No se pudieron cargar tus pedidos. Intenta de nuevo.')
-    }).finally(() => {
-      if (active) setMyOrdersLoading(false)
-    })
+      } finally {
+        inFlight = false
+        if (active && showLoading) setMyOrdersLoading(false)
+      }
+    }
 
-    return () => { active = false }
-  }, [customer?.id, customer?.phone, ordersRefresh])
+    refreshCustomerOrders.current = () => refresh(false)
+    void refresh(true)
+    return () => {
+      active = false
+      refreshCustomerOrders.current = async () => {}
+    }
+  }, [customer?.id, customer?.phone, myOrdersOpen])
+
+  const allOrdersTerminal = myOrders.length > 0
+    && myOrders.every(order => order.status === 'entregado' || order.status === 'cancelado')
+
+  useEffect(() => {
+    if (!customer || !myOrdersOpen) return
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'visible') void refreshCustomerOrders.current()
+    }
+    const interval = window.setInterval(refreshIfVisible, allOrdersTerminal ? 60_000 : 20_000)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshIfVisible()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', refreshIfVisible)
+    window.addEventListener('online', refreshIfVisible)
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', refreshIfVisible)
+      window.removeEventListener('online', refreshIfVisible)
+    }
+  }, [customer, myOrdersOpen, allOrdersTerminal])
 
   const requestNewPasswordLink = () => {
     setExpiredLink(false)
@@ -296,7 +345,7 @@ export default function App() {
     try {
       const createdInputs = await Promise.all(cartRestaurantIds.map(async id => {
         const lines = cart.filter(i => i.restaurantId === id)
-        await crearPedido({
+        const response = await crearPedido({
           codigo: customer.id,
           telefono: customer.phone,
           id_restaurante: id,
@@ -310,23 +359,28 @@ export default function App() {
         const fee = feeOf(id)
         const distanceKm = quoteOf(id)?.km
         return {
-          restaurantId: id,
-          restaurantName: lines[0].restaurantName,
-          items: lines.map(({ name, price, qty }) => ({ name, price, qty })),
-          subtotal: sub,
-          deliveryFee: fee,
-          distanceKm,
-          total: sub + fee,
-          customerId: customer.id,
-          customerName: customer.name,
-          customerPhone: customer.phone,
-          location: location ?? undefined,
-          payment: { method: 'pago_movil' as const, reference: payOf(id).ref.trim(), proof: payOf(id).proof! },
+          codigo: response.pedido.codigo,
+          input: {
+            restaurantId: id,
+            restaurantName: lines[0].restaurantName,
+            items: lines.map(({ name, price, qty }) => ({ name, price, qty })),
+            subtotal: sub,
+            deliveryFee: fee,
+            distanceKm,
+            total: sub + fee,
+            customerId: customer.id,
+            customerName: customer.name,
+            customerPhone: customer.phone,
+            location: location ?? undefined,
+            payment: { method: 'pago_movil' as const, reference: payOf(id).ref.trim(), proof: payOf(id).proof! },
+          },
         }
       }))
-      const created = ordersRepo.addMany(createdInputs)
-    created.forEach(o => void notifyOrderByWhatsApp(o, repo.restaurants.find(r => r.id === o.restaurantId)?.whatsapp))
-    setOrdersRefresh(refresh => refresh + 1)
+      const created = ordersRepo.addMany(createdInputs.map(({ input }) => input))
+      created.forEach((order, index) => void notifyOrderByWhatsApp(
+        { ...order, id: createdInputs[index].codigo },
+        repo.restaurants.find(r => r.id === order.restaurantId)?.whatsapp,
+      ))
     setCheckoutOpen(false)
     setLocation(null)
     setLocStatus('idle')
@@ -336,7 +390,7 @@ export default function App() {
     setCart([])
     } catch (orderFailure) {
       const message = orderFailure instanceof Error ? orderFailure.message : String(orderFailure)
-      console.error('[cliente] confirmar pedido', orderFailure)
+      console.error('[pedidos] crear', orderFailure)
       if (/cliente no encontrado/i.test(message)) {
         const notice = 'Tu cuenta no se encontró: regístrate de nuevo o entra con tu código'
         customersRepo.logout(notice)
@@ -845,7 +899,7 @@ export default function App() {
         </div>
       )}
 
-      {myOrdersOpen && customer && <MyOrders customer={customer} orders={myOrders} loading={myOrdersLoading} error={myOrdersError} onLogout={() => { customersRepo.logout(); setMyOrdersOpen(false) }} onClose={() => setMyOrdersOpen(false)} />}
+      {myOrdersOpen && customer && <MyOrders customer={customer} orders={myOrders} loading={myOrdersLoading} error={myOrdersError} onRefresh={() => void refreshCustomerOrders.current()} onLogout={() => { customersRepo.logout(); setMyOrdersOpen(false) }} onClose={() => setMyOrdersOpen(false)} />}
 
       {authOpen && <CustomerAuth onRegister={customersRepo.register} onLogin={customersRepo.login} onDone={onAuthDone} onClose={() => setAuthOpen(null)} notice={customersRepo.notice} />}
 
