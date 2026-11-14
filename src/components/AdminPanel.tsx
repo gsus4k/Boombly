@@ -11,6 +11,7 @@ import Reports from './Reports'
 import Customers from './Customers'
 import AccountSettings from './AccountSettings'
 import CuentasRestaurantes from './CuentasRestaurantes'
+import PedidosRestaurante from './PedidosRestaurante'
 import { getRestaurantImageUrl } from '../data/repository'
 import { supabase } from '../lib/supabase'
 import { useDatosEnVivo } from '../lib/useDatosEnVivo'
@@ -830,8 +831,36 @@ function RestaurantProducts({ restaurantId }: { restaurantId: string }) {
   )
 }
 
+function AdminPedidos({ restaurants }: { restaurants: Restaurant[] }) {
+  const [selectedRestaurantId, setSelectedRestaurantId] = useState('')
+  const currentRestaurantId = restaurants.some(item => item.id === selectedRestaurantId)
+    ? selectedRestaurantId
+    : restaurants[0]?.id ?? ''
+
+  return (
+    <div className="p-5">
+      <label htmlFor="admin-orders-restaurant" className={labelCls}>Restaurante</label>
+      <select
+        id="admin-orders-restaurant"
+        className={`${inputCls} mb-4`}
+        value={currentRestaurantId}
+        onChange={event => setSelectedRestaurantId(event.target.value)}
+        disabled={restaurants.length === 0}
+      >
+        {restaurants.length === 0 && <option value="">No hay restaurantes</option>}
+        {restaurants.map(restaurant => (
+          <option key={restaurant.id} value={restaurant.id}>{restaurant.name}</option>
+        ))}
+      </select>
+      {currentRestaurantId
+        ? <PedidosRestaurante key={currentRestaurantId} idRestaurante={currentRestaurantId} />
+        : <p className="py-8 text-center text-sm text-[#777]">No hay restaurantes disponibles.</p>}
+    </div>
+  )
+}
+
 function Dashboard({ auth, repo, ordersRepo, onClose }: { auth: Auth; repo: Repo; ordersRepo: OrdersRepo; onClose: () => void }) {
-  const [tab, setTab] = useState<'restaurantes' | 'clientes' | 'reportes' | 'categorias' | 'repartidores' | 'cuenta'>('restaurantes')
+  const [tab, setTab] = useState<'restaurantes' | 'pedidos' | 'clientes' | 'reportes' | 'categorias' | 'repartidores' | 'cuenta'>('restaurantes')
   const [customers, setCustomers] = useState<(Customer & { createdAt: number })[]>([])
   const [customersLoaded, setCustomersLoaded] = useState(false)
   const [customersLoading, setCustomersLoading] = useState(false)
@@ -984,7 +1013,7 @@ function Dashboard({ auth, repo, ordersRepo, onClose }: { auth: Auth; repo: Repo
       </div>
 
       <div className="px-5 pt-4 flex gap-2">
-        {(['restaurantes', 'clientes', 'reportes', 'categorias', 'repartidores', 'cuenta'] as const).map(t => (
+        {(['restaurantes', 'pedidos', 'clientes', 'reportes', 'categorias', 'repartidores', 'cuenta'] as const).map(t => (
           <button
             key={t}
             disabled={t === 'clientes' && customersLoading}
@@ -994,13 +1023,15 @@ function Dashboard({ auth, repo, ordersRepo, onClose }: { auth: Auth; repo: Repo
             }}
             className={`px-4 py-2 rounded-lg text-sm font-display font-semibold capitalize transition-colors ${tab === t ? 'bg-[#2563eb] text-white' : 'bg-[#141414] text-[#888] hover:text-white border border-[#2a2a2a]'}`}
           >
-            {t === 'reportes' ? `Reportes (${ordersRepo.orders.length})` : t === 'clientes' ? `Clientes${customersLoaded ? ` (${customers.length})` : ''}` : t === 'categorias' ? 'Categorías' : t === 'repartidores' ? 'Repartidores' : t === 'cuenta' ? 'Mi cuenta' : 'Restaurantes'}
+            {t === 'reportes' ? `Reportes (${ordersRepo.orders.length})` : t === 'clientes' ? `Clientes${customersLoaded ? ` (${customers.length})` : ''}` : t === 'categorias' ? 'Categorías' : t === 'repartidores' ? 'Repartidores' : t === 'cuenta' ? 'Mi cuenta' : t === 'pedidos' ? 'Pedidos' : 'Restaurantes'}
           </button>
         ))}
       </div>
 
       {tab === 'cuenta' ? (
         <div className="p-5"><AccountSettings /></div>
+      ) : tab === 'pedidos' ? (
+        <AdminPedidos restaurants={repo.restaurants} />
       ) : tab === 'categorias' ? (
         <div className="p-5"><CategoriesManager /></div>
       ) : tab === 'repartidores' ? (

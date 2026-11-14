@@ -5,6 +5,7 @@ import { getRestaurantImageUrl } from '../data/repository'
 import { useDatosEnVivo } from '../lib/useDatosEnVivo'
 import AccountSettings from './AccountSettings'
 import ForgotPassword from './ForgotPassword'
+import PedidosRestaurante from './PedidosRestaurante'
 
 const inputCls =
   'w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-xl px-3 py-3 text-sm outline-none focus:border-[#2563eb] transition-colors placeholder:text-[#555]'
@@ -376,6 +377,10 @@ export default function RestaurantPanel({ onClose }: { onClose: () => void }) {
             <button type="button" onClick={onClose} aria-label="Cerrar" className="text-[#777] hover:text-white text-xl">✕</button>
           </div>
         </div>
+
+        {loggedIn && roleChecked && role === 'restaurante' && restaurantView === 'gestion' && restaurantId && (
+          <PedidosRestaurante key={restaurantId} idRestaurante={restaurantId} />
+        )}
 
         {!loggedIn ? (
           <form onSubmit={signIn} className="max-w-md mx-auto py-4">
