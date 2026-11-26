@@ -56,12 +56,22 @@ const ub = await preguntar('Ubicación de entrega "lat,lng" (Enter = cerca del r
 const [lat, lng] = ub.split(',').map(s => Number(s.trim()))
 if (!Number.isFinite(lat) || !Number.isFinite(lng)) salir('La ubicación debe tener el formato  10.07,-69.30')
 
-// 5) Llamar a la función
+// 5) Captura del pago: JPG/PNG propio o un JPG de prueba de 1×1 px
+const JPG_PRUEBA = '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA='
+const rutaImg = await preguntar('Ruta de una captura JPG/PNG (Enter = imagen de prueba)', '')
+let comprobante = { base64: JPG_PRUEBA, tipo: 'image/jpeg' }
+if (rutaImg) {
+  if (!existsSync(rutaImg)) salir(`No existe el archivo ${rutaImg}`)
+  if (!/\.(jpe?g|png)$/i.test(rutaImg)) salir('La captura debe ser .jpg o .png')
+  comprobante = { base64: readFileSync(rutaImg).toString('base64'), tipo: /\.png$/i.test(rutaImg) ? 'image/png' : 'image/jpeg' }
+}
+
+// 6) Llamar a la función
 console.log('\nEnviando el pedido...')
 let r, j
 try {
   r = await fetch(`${url}/functions/v1/crear-pedido`, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: key },
-    body: JSON.stringify({ codigo, telefono, id_restaurante: rest.id_restaurante, lat, lng, referencia, items: [{ id_producto: prod.id_producto, cantidad }] }) })
+    body: JSON.stringify({ codigo, telefono, id_restaurante: rest.id_restaurante, lat, lng, referencia, items: [{ id_producto: prod.id_producto, cantidad }], comprobante }) })
   j = await r.json().catch(() => ({}))
 } catch (e) { salir(`No pude conectar con la función: ${e.message}`) }
 
@@ -70,6 +80,8 @@ if (!r.ok || !j.ok) {
   const pista = /Cliente no encontrado/.test(msg) ? 'El código y el teléfono deben ser EXACTAMENTE los de la tabla cliente.'
     : /cobertura/i.test(msg) ? 'El destino está a más de 100 km del restaurante: revisa lat/lng del restaurante y de la entrega.'
     : /ruta inv/i.test(msg) ? 'Casi siempre es lat/lng del restaurante mal puestas (¿invertidas?).'
+    : /captura del pago/i.test(msg) ? 'La captura debe ser un JPG o PNG real de máximo 5 MB.'
+    : /guardar la captura/i.test(msg) ? 'Revisa que exista el bucket privado "comprobantes" en Supabase → Storage.'
     : /JWT/i.test(msg) ? 'Publica la función con:  npx supabase functions deploy crear-pedido --no-verify-jwt'
     : r.status === 404 ? 'La función no está publicada: ejecuta el deploy del paso 12.' : ''
   salir(`La función respondió: ${msg}${pista ? `\n  → ${pista}` : ''}`)

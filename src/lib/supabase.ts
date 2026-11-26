@@ -22,7 +22,7 @@ export type NuevoPedido = {
   precision_m?: number
   items: { id_producto: string; cantidad: number }[]
   referencia: string // referencia del pago móvil
-  comprobante_path?: string // ruta en Storage (bucket "comprobantes")
+  comprobante: { base64: string; tipo: 'image/jpeg' | 'image/png' } // captura del pago móvil (máx. 5 MB)
 }
 
 export async function crearPedido(p: NuevoPedido) {

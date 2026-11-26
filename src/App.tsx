@@ -354,6 +354,8 @@ export default function App() {
           precision_m: Math.round(location.accuracy),
           items: lines.map(line => ({ id_producto: line.productId ?? '', cantidad: line.qty })),
           referencia: payOf(id).ref.trim(),
+          // compressImage siempre produce un data URL JPEG: se envía solo la parte base64
+          comprobante: { base64: (payOf(id).proof ?? '').split(',')[1] ?? '', tipo: 'image/jpeg' },
         })
         const sub = lines.reduce((s, i) => s + i.price * i.qty, 0)
         const fee = feeOf(id)

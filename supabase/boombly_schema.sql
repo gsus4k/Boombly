@@ -126,6 +126,9 @@ create table pago (
   estado          estado_pago not null default 'pendiente',
   referencia      text not null check (referencia ~ '^[0-9]{4,20}$'),
   comprobante_url text,                       -- ruta en Supabase Storage (bucket privado "comprobantes")
+  comprobante_token        text unique,       -- token público temporal para ver-comprobante (32 hex + .jpg/.png)
+  comprobante_token_expira timestamptz,
+  comprobante_subido_en    timestamptz,
   creado_en       timestamptz not null default now(),
   verificado_en   timestamptz
 );
@@ -141,6 +144,8 @@ create table notificacion (
   estado                estado_envio not null default 'pendiente',
   wa_message_id         text,
   error                 text,
+  estado_proveedor      text,                 -- último estado que reporta Twilio (queued, sent, delivered, read, failed…)
+  actualizado_en        timestamptz,
   creado_en             timestamptz not null default now()
 );
 
@@ -364,6 +369,39 @@ revoke all on function asignar_repartidor(uuid) from public, anon, authenticated
 grant execute on function crear_pedido(uuid, uuid, numeric, numeric, numeric, numeric, jsonb, text, text) to service_role;
 grant execute on function asignar_repartidor(uuid) to service_role;
 grant execute on function calificar_pedido(uuid, int, text) to authenticated;
+
+-- Pedidos del panel del restaurante (incluye la captura y la referencia del pago).
+-- Solo el gestor de ESE restaurante (tabla restaurante_gestor) o un admin.
+-- Migración: supabase/migrations/20261126000000_pedidos_del_restaurante.sql
+create function pedidos_del_restaurante(p_id_restaurante uuid)
+returns table (
+  id_pedido uuid, codigo text, estado text, creado_en timestamptz, cliente text, telefono_cliente text,
+  unidades integer, subtotal numeric, costo_envio numeric, total numeric, comprobante_url text, referencia_pago text
+)
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if auth.uid() is null or not (
+    es_admin() or exists (select 1 from restaurante_gestor g where g.id_restaurante = p_id_restaurante and g.auth_user_id = auth.uid())
+  ) then
+    raise exception 'No tienes acceso a los pedidos de este restaurante' using errcode = '42501';
+  end if;
+
+  return query
+  select p.id_pedido, p.codigo, p.estado::text, p.creado_en, c.nombre, c.telefono,
+         coalesce(d.unidades, 0)::integer, coalesce(d.subtotal, 0)::numeric, p.costo_envio::numeric,
+         (p.costo_envio + coalesce(d.subtotal, 0))::numeric, pg.comprobante_url, pg.referencia
+  from pedido p
+  join cliente c on c.id_cliente = p.id_cliente
+  left join lateral (select sum(dp.cantidad) as unidades, sum(dp.subtotal) as subtotal
+                     from detalle_pedido dp where dp.id_pedido = p.id_pedido) d on true
+  left join lateral (select x.comprobante_url, x.referencia from pago x
+                     where x.id_pedido = p.id_pedido order by x.creado_en desc limit 1) pg on true
+  where p.id_restaurante = p_id_restaurante
+  order by p.creado_en desc
+  limit 100;
+end $$;
+revoke all on function pedidos_del_restaurante(uuid) from public, anon;
+grant execute on function pedidos_del_restaurante(uuid) to authenticated;
 
 -- ---------- 6. SEGURIDAD (Row Level Security) ----------
 alter table categoria        enable row level security;
